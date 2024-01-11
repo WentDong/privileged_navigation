@@ -45,6 +45,7 @@ class ActorCritic(nn.Module):
                         activation='elu',
                         init_noise_std=1.0,
                         fixed_std=False,
+                        include_history_steps=1,
                         **kwargs):
         if kwargs:
             print("ActorCritic.__init__ got unexpected arguments, which will be ignored: " + str([key for key in kwargs.keys()]))
@@ -57,7 +58,7 @@ class ActorCritic(nn.Module):
 
         # Policy
         actor_layers = []
-        actor_layers.append(nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]))
+        actor_layers.append(nn.Linear(mlp_input_dim_a * include_history_steps, actor_hidden_dims[0]))
         actor_layers.append(activation)
         for l in range(len(actor_hidden_dims)):
             if l == len(actor_hidden_dims) - 1:
@@ -69,7 +70,7 @@ class ActorCritic(nn.Module):
 
         # Value function
         critic_layers = []
-        critic_layers.append(nn.Linear(mlp_input_dim_c, critic_hidden_dims[0]))
+        critic_layers.append(nn.Linear(mlp_input_dim_c * include_history_steps, critic_hidden_dims[0]))
         critic_layers.append(activation)
         for l in range(len(critic_hidden_dims)):
             if l == len(critic_hidden_dims) - 1:

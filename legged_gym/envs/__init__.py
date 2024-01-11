@@ -36,7 +36,7 @@ from legged_gym.utils.task_registry import task_registry
 
 from .a1.a1_amp_config import A1AMPCfg, A1AMPCfgPPO
 from .a1.a1_config import A1RoughCfg, A1RoughCfgPPO
-from .a1.a1_navigation_config import A1NavigationCfg, A1NavigationCfgPPO
+from .a1.a1_navigation_config import A1NavigationCfg, A1NavigationCfgPPO, A1LocomotionCfgPPO
 from .base.legged_robot import LeggedRobot
 from .base.navigation_task import NavigationTask
 

@@ -75,6 +75,11 @@ class BaseTask():
             self.obs_buf_history = observation_buffer.ObservationBuffer(
                 self.num_envs, self.num_obs,
                 self.include_history_steps, self.device)
+        if hasattr(cfg.env, 'include_privileged_history_steps') and cfg.env.include_privileged_history_steps is not None:
+            self.privileged_obs_buf_history = observation_buffer.ObservationBuffer(
+                self.num_envs, self.num_privileged_obs,
+                self.include_history_steps, self.device)
+            
         self.obs_buf = torch.zeros(self.num_envs, self.num_obs, device=self.device, dtype=torch.float)
         self.rew_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         self.reset_buf = torch.ones(self.num_envs, device=self.device, dtype=torch.long)
