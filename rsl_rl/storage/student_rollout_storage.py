@@ -33,7 +33,7 @@ import numpy as np
 
 from rsl_rl.utils import split_and_pad_trajectories
 
-class RolloutStorage:
+class StudentRolloutStorage:
     class Transition:
         def __init__(self):
             self.observations = None
@@ -47,21 +47,20 @@ class RolloutStorage:
             self.action_sigma = None
             self.hidden_states = None
 
-            self.history = None
+            self.teacher_latent_vectors = None
+            self.teacher_actions = None
         
         def clear(self):
             self.__init__()
 
     def __init__(self, num_envs, num_transitions_per_env, obs_shape, privileged_obs_shape, actions_shape,
-                 history_obs_dim = 42, history_length = 5, device='cpu'):
+                 latent_vector_shape = 24, device='cpu'):
 
         self.device = device
 
         self.obs_shape = obs_shape
         self.privileged_obs_shape = privileged_obs_shape
         self.actions_shape = actions_shape
-        self.history_length = history_length
-        self.history_obs_dim = history_obs_dim
 
         # Core
         self.observations = torch.zeros(num_transitions_per_env, num_envs, *obs_shape, device=self.device)
@@ -73,8 +72,8 @@ class RolloutStorage:
         self.actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
 
-        self.history = torch.zeros(num_transitions_per_env, num_envs, history_length * history_obs_dim, device=self.device)
-
+        self.teacher_actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
+        self.teacher_latent_vectors = torch.zeros(num_transitions_per_env, num_envs, latent_vector_shape, device=self.device)
 
         # For PPO
         self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
@@ -99,9 +98,8 @@ class RolloutStorage:
         self.observations[self.step].copy_(transition.observations)
         if self.privileged_observations is not None: self.privileged_observations[self.step].copy_(transition.critic_observations)
         self.actions[self.step].copy_(transition.actions)
-
-        if self.history_length>0 and self.history_obs_dim >0:
-            self.history[self.step].copy_(transition.history)
+        self.teacher_actions[self.step].copy_(transition.teacher_actions)
+        self.teacher_latent_vectors[self.step].copy_(transition.teacher_latent_vectors)
 
         self.rewards[self.step].copy_(transition.rewards.view(-1, 1))
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
@@ -175,8 +173,6 @@ class RolloutStorage:
         old_mu = self.mu.flatten(0, 1)
         old_sigma = self.sigma.flatten(0, 1)
 
-        history = self.history.flatten(0, 1)
-
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
 
@@ -193,10 +189,7 @@ class RolloutStorage:
                 advantages_batch = advantages[batch_idx]
                 old_mu_batch = old_mu[batch_idx]
                 old_sigma_batch = old_sigma[batch_idx]
-
-                history_batch = history[batch_idx]
-
-                yield obs_batch, critic_observations_batch, actions_batch, history_batch, target_values_batch, advantages_batch, returns_batch, \
+                yield obs_batch, critic_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
                        old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None
 
     # for RNNs only
@@ -227,6 +220,8 @@ class RolloutStorage:
                 critic_obs_batch = padded_critic_obs_trajectories[:, first_traj:last_traj]
 
                 actions_batch = self.actions[:, start:stop]
+                teacher_actions_batch = self.teacher_actions[:, start:stop]
+                teacher_latent_vectors_batch = self.teacher_latent_vectors[:, start:stop]
                 old_mu_batch = self.mu[:, start:stop]
                 old_sigma_batch = self.sigma[:, start:stop]
                 returns_batch = self.returns[:, start:stop]
@@ -245,8 +240,7 @@ class RolloutStorage:
                 # remove the tuple for GRU
                 hid_a_batch = hid_a_batch[0] if len(hid_a_batch)==1 else hid_a_batch
                 hid_c_batch = hid_c_batch[0] if len(hid_c_batch)==1 else hid_a_batch
-
-                yield obs_batch, critic_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, \
+                yield obs_batch, critic_obs_batch, actions_batch, teacher_actions_batch, teacher_latent_vectors_batch, values_batch, advantages_batch, returns_batch, \
                        old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (hid_a_batch, hid_c_batch), masks_batch
                 
                 first_traj = last_traj

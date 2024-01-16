@@ -36,23 +36,27 @@ MOTION_FILES = glob.glob('datasets/mocap_motions/*')
 class A1NavigationCfg( LeggedRobotCfg ):
     class env( LeggedRobotCfg.env ):
         mode = 'train'
-        num_envs = 512
-        include_history_steps = 1  # Number of steps of history to include.
-        include_privileged_history_steps = 1
+        num_envs = 256
+        include_history_steps = None  # Number of steps of history to include.
+        include_privileged_history_steps = None
         num_observations = 9 + 176
         num_privileged_obs = 9 + 176
+        privileged_dim = 24 + 3  # privileged_obs[:,:privileged_dim] is the privileged information in privileged_obs, include 3-dim base linear vel
+        height_dim = 187
+
         num_actions = 3 # velocity_x, velocity_y, angular_yaw
         reference_state_initialization = False
         reference_state_initialization_prob = 0.85
+        episode_length_s = 40
 
     class locomotion:
         train_cfg_class_name = 'A1LocomotionCfgPPO'
         num_privileged_obs = None
-        num_observations = 48 # amp
+        num_observations = 48 + 187 + 24 # amp
         num_actions = 12
         experiment_name = "a1_amp_example"
-        load_run = 'Jul04_10-43-17_plane_collect_rate_reward'
-        checkpoint = 2000
+        load_run = 'layernorm'
+        checkpoint = 60000
         time_per_step = 0.02
     
     class terrain( LeggedRobotCfg.terrain):
@@ -61,7 +65,7 @@ class A1NavigationCfg( LeggedRobotCfg ):
         
         max_init_terrain_level = 5
         
-        # Navigation Task: 以下参数需要改为机器人头部前方   #11 x 16
+        # Navigation Task: 以下参数需要改为机器人头部前方   #11 x 17
         measured_points_x = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6] # 1mx1.6m rectangle (without center line)
         measured_points_y = [-0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5]
         
@@ -228,11 +232,11 @@ class A1NavigationCfg( LeggedRobotCfg ):
         class scales:
             # behaviour_cloning = 1.0
             success = 200
-            collision = -30
-            velocity_rate = -0.0115
-            toward = 10
-            time_cost = -0.0011
-
+            collision = -20
+            velocity_rate = -2
+            toward = 20
+            time_cost = -0.5
+            termination = -300
 
 
     
@@ -244,13 +248,13 @@ class A1NavigationCfg( LeggedRobotCfg ):
         class ranges:
             # Scale: m
             # From env center to starting point
-            starting_x = [-1, 1]
+            starting_x = [-1., 1]
             starting_y = [-1, 1]
             # Heading on starting point
             starting_yaw = [-3.1415, 3.1415]
             # From env center to goal
-            goal_x = [-3, 3]
-            goal_y = [-3, 3]
+            goal_x = [-1, 1]
+            goal_y = [-1, 1]
             
         robot_collision_box = (0.5,0.5)
         min_path_length = 5 # Scale: pixels
@@ -258,19 +262,19 @@ class A1NavigationCfg( LeggedRobotCfg ):
 
         # curriculum on navigation
         curriculum = True
-        success_epsilon = 2 # [m] (Original: 2)
+        success_epsilon = 0.5 # [m] (Original: 2)
 
         class curriculum_range:
-            max_starting_xy_curriculum = 4.0 # [m]
-            max_goal_xy_curriculum = 4.0 # [m]
-            min_success_epsilon = 0.2 # [m] (Finally: 0.3) 
+            max_starting_xy_curriculum = 2.0 # [m]
+            max_goal_xy_curriculum = 2.0 # [m]
+            min_success_epsilon = 0.3 # [m] (Finally: 0.3) 
 
 
     
     class commands:
         # curriculum = False
         # max_curriculum = 1.
-        curriculum = True
+        curriculum = False
         max_lin_vel_x_curriculum = 1.
         max_lin_vel_y_curriculum = 1.
         max_ang_vel_yaw_curriculum = 1.0
@@ -338,44 +342,57 @@ class A1NavigationCfgPPO( LeggedRobotCfgPPO ):
         max_iterations = 10000 # number of policy updates
 
 class A1LocomotionCfgPPO( LeggedRobotCfgPPO ):
-    runner_class_name = 'OnPolicyRunner'
+    runner_class_name = 'AMPTrainTeacherRunner'
     
+    class env( LeggedRobotCfg.env ):
+        num_envs = 4096
+        include_history_steps = None  # Number of steps of history to include.
+        num_observations = 48 + 187 + 24 #+ 16 #+ 11 * 17
+        num_privileged_obs = 48 + 187 + 24 #+ 16 #+ 11 * 17
+        privileged_dim = 24 + 3  # privileged_obs[:,:privileged_dim] is the privileged information in privileged_obs, include 3-dim base linear vel
+        # privileged_dim = 0
+        height_dim = 187  # privileged_obs[:,-height_dim:] is the heightmap in privileged_obs
+        reference_state_initialization = False
+        reference_state_initialization_prob = 0.85
+        amp_motion_files = MOTION_FILES
+        history_length = 5
+
     class policy:
         init_noise_std = 1.0
-        actor_hidden_dims = [512, 256, 128]
+        encoder_hidden_dims = [256, 128]
+        predictor_hidden_dims = [64, 32]
+        actor_hidden_dims = [256, 128, 64]
         critic_hidden_dims = [512, 256, 128]
+        latent_dim = 32 + 3
+        # height_latent_dim = 16  # the encoder in teacher policy encodes the heightmap into a height_latent_dim vector
+        # privileged_latent_dim = 8  # the encoder in teacher policy encodes the privileged infomation into a privileged_latent_dim vector
         activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
-        
-    class algorithm:
-        # training params
-        value_loss_coef = 1.0
-        use_clipped_value_loss = True
-        clip_param = 0.2
+        # only for 'ActorCriticRecurrent':
+        # rnn_type = 'lstm'
+        # rnn_hidden_size = 512
+        # rnn_num_layers = 1
+
+    class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
+        vel_predict_coef = 1.0
+        amp_replay_buffer_size = 1000000
         num_learning_epochs = 5
-        num_mini_batches = 4 # mini batch size = num_envs*nsteps / nminibatches
-        learning_rate = 1.e-3 #5.e-4
-        schedule = 'adaptive' # could be adaptive, fixed
-        gamma = 0.99
-        lam = 0.95
-        desired_kl = 0.01
-        max_grad_norm = 1.
+        num_mini_batches = 4
 
     class runner( LeggedRobotCfgPPO.runner ):
+        run_name = 'flat_push1'
+        experiment_name = 'a1_amp_example'
+        algorithm_class_name = 'AMPPPO'
+        policy_class_name = 'TeacherActorCritic'
+        max_iterations = 20000 # number of policy updates
+        save_interval = 1000
 
-        # logging
-        save_interval = 200 # check for potential saves every this many iterations
-        experiment_name = 'a1_navigation_test'
-        run_name = 'ppo_debug'
-        
-        # load and resume
-        resume = False
-        load_run = -1 # -1 = last run
-        checkpoint = -1 # -1 = last saved model
-        resume_path = None # updated from load_run and chkpt
-        
-        policy_class_name = 'ActorCritic'
-        algorithm_class_name = 'PPO'
-        num_steps_per_env = 24 # per iteration
-        max_iterations = 10000 # number of policy updates
+        amp_reward_coef = 0.5 * 0.02  #set to 0 means not use amp reward
+        amp_motion_files = MOTION_FILES
+        amp_num_preload_transitions = 2000000
+        amp_task_reward_lerp = 0.3
+        amp_discr_hidden_dims = [1024, 512]
 
+        min_normalized_std = [0.05, 0.02, 0.05] * 4
+
+  

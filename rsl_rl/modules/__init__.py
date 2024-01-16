@@ -30,3 +30,5 @@
 
 from .actor_critic import ActorCritic
 from .actor_critic_recurrent import ActorCriticRecurrent
+from .actor_critic_teacher import TeacherActorCritic
+from .actor_critic_student import StudentActorCritic

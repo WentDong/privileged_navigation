@@ -50,6 +50,7 @@ class AMPPPO:
                  lam=0.95,
                  value_loss_coef=1.0,
                  entropy_coef=0.0,
+                 vel_predict_coef=1.0,
                  learning_rate=1e-3,
                  max_grad_norm=1.0,
                  use_clipped_value_loss=True,
@@ -97,6 +98,7 @@ class AMPPPO:
         self.num_mini_batches = num_mini_batches
         self.value_loss_coef = value_loss_coef
         self.entropy_coef = entropy_coef
+        self.vel_predict_coef = vel_predict_coef
         self.gamma = gamma
         self.lam = lam
         self.max_grad_norm = max_grad_norm
@@ -104,7 +106,7 @@ class AMPPPO:
 
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(
-            num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device)
+            num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, device = self.device)
 
     def test_mode(self):
         self.actor_critic.test()
@@ -112,12 +114,13 @@ class AMPPPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs, amp_obs):
+    def act(self, obs, critic_obs, amp_obs, history):
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         # Compute the actions and values
+        self.transition.history = history
         aug_obs, aug_critic_obs = obs.detach(), critic_obs.detach()
-        self.transition.actions = self.actor_critic.act(aug_obs).detach()
+        self.transition.actions = self.actor_critic.act(aug_obs, history).detach()
         self.transition.values = self.actor_critic.evaluate(aug_critic_obs).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
@@ -153,6 +156,7 @@ class AMPPPO:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
+        mean_vel_predict_loss = 0
         mean_amp_loss = 0
         mean_grad_pen_loss = 0
         mean_policy_pred = 0
@@ -172,10 +176,10 @@ class AMPPPO:
                 self.num_mini_batches)
         for sample, sample_amp_policy, sample_amp_expert in zip(generator, amp_policy_generator, amp_expert_generator):
 
-                obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
+                obs_batch, critic_obs_batch, actions_batch, history_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
                     old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch = sample
                 aug_obs_batch = obs_batch.detach()
-                self.actor_critic.act(aug_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                self.actor_critic.act(aug_obs_batch, history_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
                 actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
                 aug_critic_obs_batch = critic_obs_batch.detach()
                 value_batch = self.actor_critic.evaluate(aug_critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
@@ -216,6 +220,11 @@ class AMPPPO:
                 else:
                     value_loss = (returns_batch - value_batch).pow(2).mean()
 
+                # Linear vel predict loss
+                predicted_linear_vel = self.actor_critic.get_linear_vel(aug_obs_batch, history_batch)
+                target_linear_vel = obs_batch[:, self.actor_critic.privileged_dim: self.actor_critic.privileged_dim + 3]
+                vel_predict_loss = (predicted_linear_vel - target_linear_vel).pow(2).mean()
+
                 # Discriminator loss.
                 policy_state, policy_next_state = sample_amp_policy
                 expert_state, expert_next_state = sample_amp_expert
@@ -238,6 +247,7 @@ class AMPPPO:
                 # Compute total loss.
                 loss = (
                     surrogate_loss +
+                    self.vel_predict_coef * vel_predict_loss +
                     self.value_loss_coef * value_loss -
                     self.entropy_coef * entropy_batch.mean() +
                     amp_loss + grad_pen_loss)
@@ -261,6 +271,7 @@ class AMPPPO:
                 mean_grad_pen_loss += grad_pen_loss.item()
                 mean_policy_pred += policy_d.mean().item()
                 mean_expert_pred += expert_d.mean().item()
+                mean_vel_predict_loss += vel_predict_loss.mean().item()
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
@@ -269,6 +280,7 @@ class AMPPPO:
         mean_grad_pen_loss /= num_updates
         mean_policy_pred /= num_updates
         mean_expert_pred /= num_updates
+        mean_vel_predict_loss /= num_updates
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss, mean_amp_loss, mean_grad_pen_loss, mean_policy_pred, mean_expert_pred
+        return mean_value_loss, mean_surrogate_loss, mean_vel_predict_loss, mean_amp_loss, mean_grad_pen_loss, mean_policy_pred, mean_expert_pred

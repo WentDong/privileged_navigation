@@ -58,7 +58,7 @@ def play(args):
     env_cfg.domain_rand.push_robots = False
     env_cfg.domain_rand.randomize_gains = False
     env_cfg.domain_rand.randomize_base_mass = False
-
+    env_cfg.task.success_epsilon = 0.3
     train_cfg.runner.amp_num_preload_transitions = 1
 
     env_cfg.terrain.mesh_type = 'trimesh'
@@ -69,9 +69,9 @@ def play(args):
     env_cfg.terrain.terrain_proportions = [0, 0, 0.0, 0, 1.0]
     # env_cfg.terrain.terrain_proportions = [1.0, 0, 0, 0, 0, 0]
     
-    env_cfg.commands.ranges.lin_vel_x = [0, 0]
-    env_cfg.commands.ranges.lin_vel_y = [0, 0]
-    env_cfg.commands.ranges.ang_vel_yaw = [0, 0]
+    # env_cfg.commands.ranges.lin_vel_x = [-0.4, 0.4]
+    # env_cfg.commands.ranges.lin_vel_y = [0, 0]
+    # env_cfg.commands.ranges.ang_vel_yaw = [0, 0]
     
     # env_cfg.commands.ranges.lin_vel_x = [-3, 3]
     # env_cfg.commands.ranges.lin_vel_y = [-1, 1]
@@ -92,8 +92,9 @@ def play(args):
     # train_cfg.runner.load_run = 'Jul01_16-56-15_plane_collect'
     # train_cfg.runner.load_run = 'Jul02_15-58-46_plane_collect_rate'
     # train_cfg.runner.load_run = 'Jul04_10-43-17_plane_collect_rate_reward'
-    train_cfg.runner.load_run = 'Aug06_01-52-27_ppo_clip0.6'
-    train_cfg.runner.checkpoint = 2000
+    # train_cfg.runner.load_run = 'Aug06_01-52-27_ppo_clip0.6'
+    train_cfg.runner.load_run = 'Jan12_07-33-15_ppo_debug'
+    train_cfg.runner.checkpoint = 6200
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
     policy = ppo_runner.get_inference_policy(device=env.device)
     
@@ -116,12 +117,19 @@ def play(args):
     record_actions = []
 
     for i in range(1*int(env.max_episode_length)):
-        actions = policy(obs.detach())
-        # actions[:] = 0
+        # print(obs.detach())
 
+        actions = policy(obs.detach())
+        # print(actions.detach())
+        print(env.root_states[:,:3])
+        # print(env.measured_heights[:,:])
+        # return
+        actions[:] = 0
+        actions[0, 0] = 1
+        print(actions)
         record_actions.append(actions)
 
-        obs, _, rews, dones, infos, _, _ = env.step(actions.detach(),teacher=TEST_TEACHER)
+        obs, _, rews, dones, infos, _, _ = env.step(actions.detach())
         if RECORD_FRAMES:
             if i % 2:
                 filename = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'frames', f"{img_idx}.png")

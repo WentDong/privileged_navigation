@@ -34,7 +34,7 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 MOTION_FILES = glob.glob('datasets/mocap_motions/*')
 
 
-class A1AMPCfg( LeggedRobotCfg ):
+class A1AMPFlatCfg( LeggedRobotCfg ):
 
     class env( LeggedRobotCfg.env ):
         num_envs = 4096
@@ -46,7 +46,6 @@ class A1AMPCfg( LeggedRobotCfg ):
         reference_state_initialization = False
         reference_state_initialization_prob = 0.85
         amp_motion_files = MOTION_FILES
-
 
     class terrain:
         mesh_type = 'trimesh' # "heightfield" # none, plane, heightfield or trimesh
@@ -69,8 +68,8 @@ class A1AMPCfg( LeggedRobotCfg ):
         num_rows= 10 # number of terrain rows (levels)
         num_cols = 20 # number of terrain cols (types)
         # terrain types: [wave, rough slope, stairs up, stairs down, discrete, rough_flat]
-        terrain_proportions = [0.1, 0.1, 0.30, 0.25, 0.15, 0.1]
-        # terrain_proportions = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        # terrain_proportions = [0.1, 0.1, 0.30, 0.25, 0.15, 0.1]
+        terrain_proportions = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
         # trimesh only:
         slope_treshold = 0.75 # slopes above this threshold will be corrected to vertical surfaces
 
@@ -178,9 +177,9 @@ class A1AMPCfg( LeggedRobotCfg ):
             height_measurements = 0 #only for critic
 
     class rewards( LeggedRobotCfg.rewards ):
-        reward_curriculum = True
+        reward_curriculum = False
         reward_curriculum_term = ["lin_vel_z"]
-        reward_curriculum_schedule = [0, 100, 1.0, 0]  #from iter 0 to iter 1000, decrease from 1 to 0
+        reward_curriculum_schedule = [0, 1000, 1.0, 0]  #from iter 0 to iter 1000, decrease from 1 to 0
         # reward_curriculum_term = ["torques","dof_acc","feet_air_time","collision", "action_rate"]
         # reward_curriculum_schedule = [0, 1000, 0.1, 1.0]  #from iter o to iter 1000, decrease from 1 to 0
         soft_dof_pos_limit = 0.9
@@ -199,9 +198,9 @@ class A1AMPCfg( LeggedRobotCfg ):
             action_rate = -0.01
 
             lin_vel_z = -2.0
-            ang_vel_xy = 0#-0.05
-            orientation = 0#-2.0
-            action_magnitude = 0#-0.3
+            ang_vel_xy = -0.05
+            orientation = -2.0
+            action_magnitude = -0.3
 
 
             # clearance = -0.2
@@ -218,10 +217,10 @@ class A1AMPCfg( LeggedRobotCfg ):
         max_lin_vel_y_curriculum = 0.2
         max_ang_vel_yaw_curriculum = 0.5
 
-        max_flat_lin_vel_forward_x_curriculum = 2.0
+        max_flat_lin_vel_forward_x_curriculum = 1.0
         max_flat_lin_vel_backward_x_curriculum = 1.0
         max_flat_lin_vel_y_curriculum = 1.0
-        max_flat_ang_vel_yaw_curriculum = 4.0
+        max_flat_ang_vel_yaw_curriculum = 3.0
         num_commands = 4 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
         resampling_time = 10. # time before command are changed[s]
         heading_command = True # if true: compute ang vel command from heading error
@@ -236,7 +235,7 @@ class A1AMPCfg( LeggedRobotCfg ):
             flat_ang_vel_yaw = [-0.2, 0.2]    # min max [rad/s]
             flat_heading = [-3.14 / 4, 3.14 / 4]
 
-class A1AMPCfgPPO( LeggedRobotCfgPPO ):
+class A1AMPFlatCfgPPO( LeggedRobotCfgPPO ):
     runner_class_name = 'AMPOnPolicyRunner'
     class policy:
         init_noise_std = 1.0
@@ -268,7 +267,7 @@ class A1AMPCfgPPO( LeggedRobotCfgPPO ):
         max_iterations = 20000 # number of policy updates
         save_interval = 1000
 
-        amp_reward_coef = 0.5 * 0.02  #set to 0 means not use amp reward
+        amp_reward_coef = 0 #0.5 * 0.02  #set to 0 means not use amp reward
         amp_motion_files = MOTION_FILES
         amp_num_preload_transitions = 2000000
         amp_task_reward_lerp = 0.3
