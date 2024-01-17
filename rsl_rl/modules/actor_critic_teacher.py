@@ -189,10 +189,19 @@ class TeacherActorCritic(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def act_inference(self, observations, history):
+        # print("HIS: ", history.detach())
         latent_vector = self.history_encoder(history)
         command = observations[:, self.privileged_dim + 6:self.privileged_dim + 9]
         # obs_with_command = observations[:, self.privileged_dim:-self.height_dim]
         concat_observations = torch.concat((latent_vector, command),
+                                           dim=-1)
+        actions_mean = self.actor(concat_observations)
+        return actions_mean
+
+    def act_inferenc_without_privileged(self, commands, history):
+        # print("HIS: ", history.detach())
+        latent_vector = self.history_encoder(history)
+        concat_observations = torch.concat((latent_vector, commands),
                                            dim=-1)
         actions_mean = self.actor(concat_observations)
         return actions_mean

@@ -34,7 +34,10 @@ class LeggedRobotCfg(BaseConfig):
     class env:
         num_envs = 4096
         num_observations = 235
-        num_privileged_obs = None # if not None a privilege_obs_buf will be returned by step() (critic obs for assymetric training). None is returned otherwise 
+        privileged_obs = True  # if True, add the privileged information in the obs
+        privileged_dim = 24 + 3  # privileged_obs[:,:privileged_dim] is the privileged information in privileged_obs, include 3-dim base linear vel
+        height_dim = 187  # privileged_obs[:,-height_dim:] is the heightmap in privileged_obs
+        num_privileged_obs = None # if not None a priviledge_obs_buf will be returned by step() (critic obs for assymetric training). None is returned otherwise 
         num_actions = 12
         env_spacing = 3.  # not used with heightfields/trimeshes 
         send_timeouts = True # send time out information to the algorithm
@@ -42,16 +45,16 @@ class LeggedRobotCfg(BaseConfig):
         reference_state_initialization = False # initialize state from reference data
 
     class terrain:
-        mesh_type = 'plane' # "heightfield" # none, plane, heightfield or trimesh
+        mesh_type = 'trimesh' # "heightfield" # none, plane, heightfield or trimesh
         horizontal_scale = 0.1 # [m]
         vertical_scale = 0.005 # [m]
-        border_size = 25 # [m]
+        border_size = 50 # [m]  change 25 to 50
         curriculum = True
         static_friction = 1.0
         dynamic_friction = 1.0
         restitution = 0.
         # rough terrain only:
-        measure_heights = False
+        measure_heights = True
         measured_points_x = [-0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8] # 1mx1.6m rectangle (without center line)
         measured_points_y = [-0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5]
         selected = False # select a unique terrain type and pass all arguments
@@ -61,8 +64,9 @@ class LeggedRobotCfg(BaseConfig):
         terrain_width = 8.
         num_rows= 10 # number of terrain rows (levels)
         num_cols = 20 # number of terrain cols (types)
-        # terrain types: [smooth slope, rough slope, stairs up, stairs down, discrete]
-        terrain_proportions = [0.1, 0.1, 0.35, 0.25, 0.2]
+        # terrain types: [wave, rough slope, stairs up, stairs down, discrete, rough_flat]
+        terrain_proportions = [0.1, 0.1, 0.30, 0.25, 0.15, 0.1]
+        # terrain_proportions = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
         # trimesh only:
         slope_treshold = 0.75 # slopes above this threshold will be corrected to vertical surfaces
 
@@ -120,17 +124,35 @@ class LeggedRobotCfg(BaseConfig):
 
     class domain_rand:
         randomize_friction = True
-        friction_range = [0.5, 1.25]
-        randomize_base_mass = False
-        added_mass_range = [-1., 1.]
+        friction_range = [0.25, 1.75]
+        randomize_restitution = True
+        restitution_range = [0, 1]
+
+        randomize_base_mass = True
+        added_mass_range = [-1., 1.]  # kg
+        randomize_link_mass = True
+        link_mass_range = [0.8, 1.2]
+        randomize_com_pos = True
+        com_pos_range = [-0.05, 0.05]
+
         push_robots = True
         push_interval_s = 15
-        max_push_vel_xy = 1.
-        randomize_gains = False
+        max_push_vel_xy = 1.0
+
+        randomize_gains = True
         stiffness_multiplier_range = [0.9, 1.1]
         damping_multiplier_range = [0.9, 1.1]
+        randomize_motor_strength = True
+
+        motor_strength_range = [0.9, 1.1]
+        randomize_action_latency = True
+        randomize_obs_latency = True
+        latency_range = [0.00, 0.02]
 
     class rewards:
+        reward_curriculum = True
+        reward_curriculum_term = ["lin_vel_z"]
+        reward_curriculum_schedule = [0, 1000, 1, 0]  #from iter 0 to iter 1000, decrease from 1 to 0
         class scales:
             termination = -0.0
             tracking_lin_vel = 1.0
@@ -149,7 +171,7 @@ class LeggedRobotCfg(BaseConfig):
             stand_still = -0.
 
         only_positive_rewards = True # if true negative total rewards are clipped at zero (avoids early termination problems)
-        tracking_sigma = 0.25 # tracking reward = exp(-error^2/sigma)
+        tracking_sigma = 0.15 # tracking reward = exp(-error^2/sigma)
         soft_dof_pos_limit = 1. # percentage of urdf limits, values above this limit are penalized
         soft_dof_vel_limit = 1.
         soft_torque_limit = 1.
@@ -164,7 +186,7 @@ class LeggedRobotCfg(BaseConfig):
             dof_vel = 0.05
             height_measurements = 5.0
         clip_observations = 100.
-        clip_actions = 100.
+        clip_actions = 6.
 
     class noise:
         add_noise = True
@@ -184,7 +206,7 @@ class LeggedRobotCfg(BaseConfig):
         lookat = [11., 5, 3.]  # [m]
 
     class sim:
-        dt =  0.005
+        dt =  0.002
         substeps = 1
         gravity = [0., 0. ,-9.81]  # [m/s^2]
         up_axis = 1  # 0 is y, 1 is z
@@ -209,6 +231,9 @@ class LeggedRobotCfgPPO(BaseConfig):
         init_noise_std = 1.0
         actor_hidden_dims = [512, 256, 128]
         critic_hidden_dims = [512, 256, 128]
+        latent_dim = 32
+        # height_latent_dim = 16  # the encoder in teacher policy encodes the heightmap into a height_latent_dim vector
+        # privileged_latent_dim = 8  # the encoder in teacher policy encodes the privileged infomation into a privileged_latent_dim vector
         activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
         # only for 'ActorCriticRecurrent':
         # rnn_type = 'lstm'

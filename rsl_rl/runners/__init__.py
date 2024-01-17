@@ -30,3 +30,4 @@
 
 from .on_policy_runner import OnPolicyRunner
 from .amp_on_policy_runner import AMPOnPolicyRunner
+from .amp_train_teacher_runner import AMPTrainTeacherRunner

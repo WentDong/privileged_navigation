@@ -29,74 +29,75 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 
-import inspect
 import os
-
+import inspect
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 parentdir = os.path.dirname(os.path.dirname(currentdir))
 os.sys.path.insert(0, parentdir)
+from legged_gym import LEGGED_GYM_ROOT_DIR
+
 import isaacgym
+from legged_gym.envs import *
+from legged_gym.utils import  get_args, export_policy_as_jit, task_registry, Logger
+
 import numpy as np
 import torch
-from legged_gym import LEGGED_GYM_ROOT_DIR
-from legged_gym.envs import *
-from legged_gym.utils import (Logger, export_policy_as_jit, get_args,
-                              task_registry)
 
 
 def play(args):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
-    
     # override some parameters for testing
-    # env_cfg.env.mode = 'train'
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 1)
     env_cfg.terrain.num_rows = 1
     env_cfg.terrain.num_cols = 1
     env_cfg.terrain.curriculum = False
     env_cfg.noise.add_noise = False
-    # env_cfg.domain_rand.randomize_friction = True
-    env_cfg.domain_rand.randomize_friction = False
+    # env_cfg.domain_rand.randomize_friction = False
+    # env_cfg.domain_rand.randomize_restitution = False
+
+    # env_cfg.commands.heading_command = True
+
+    env_cfg.domain_rand.friction_range = [1.0, 1.0]
+    env_cfg.domain_rand.restitution_range = [0.5, 0.5]
+    env_cfg.domain_rand.added_mass_range = [0., 0.]  # kg
+    env_cfg.domain_rand.com_pos_range = [-0.0, 0.0]
+
+    env_cfg.domain_rand.randomize_action_latency = False
+    env_cfg.domain_rand.randomize_obs_latency = False
     env_cfg.domain_rand.push_robots = False
     env_cfg.domain_rand.randomize_gains = False
-    env_cfg.domain_rand.randomize_base_mass = False
-    # env_cfg.task.success_epsilon = 0.3
+    # env_cfg.domain_rand.randomize_base_mass = False
+    env_cfg.domain_rand.randomize_link_mass = False
+    # env_cfg.domain_rand.randomize_com_pos = False
+    env_cfg.domain_rand.randomize_motor_strength = False
+
     train_cfg.runner.amp_num_preload_transitions = 1
 
     env_cfg.terrain.mesh_type = 'trimesh'
-    # env_cfg.terrain.terrain_proportions = [0.0, 0, 0, 0, 0, 1.0]
-    # env_cfg.terrain.terrain_proportions = [0, 1.0, 0, 0, 0, 0]
+    env_cfg.terrain.terrain_proportions = [0.0, 0, 0, 0, 1]
+    # env_cfg.terrain.terrain_proportions = [0, 1.0, 0, 0, 0]
     # env_cfg.terrain.terrain_proportions = [0, 0, 1.0, 0, 0]
     # env_cfg.terrain.terrain_proportions = [0, 0, 0, 1.0, 0]
-    # env_cfg.terrain.terrain_proportions = [0, 0, 0.0, 0, 1.0]
-    # env_cfg.terrain.terrain_proportions = [1.0, 0, 0, 0, 0, 0]
-    
-    # env_cfg.commands.ranges.lin_vel_x = [-0.4, 0.4]
-    # env_cfg.commands.ranges.lin_vel_y = [0, 0]
-    # env_cfg.commands.ranges.ang_vel_yaw = [0, 0]
-    
-    # env_cfg.commands.ranges.lin_vel_x = [-3, 3]
-    # env_cfg.commands.ranges.lin_vel_y = [-1, 1]
-    # env_cfg.commands.ranges.ang_vel_yaw = [-1, 1]
-        
-    
+    # env_cfg.terrain.terrain_proportions = [0, 0, 0, 0, 1.0, 0]
+    # env_cfg.terrain.terrain_proportions = [0, 0, 0, 0, 0, 1.0]
+    env_cfg.commands.ranges.lin_vel_x = [1, 1]
+    env_cfg.commands.ranges.lin_vel_y = [-0.0, -0.0]
+    env_cfg.commands.ranges.ang_vel_yaw = [0.0, 0.0]
+    env_cfg.commands.ranges.heading = [0, 0]
+
+    env_cfg.commands.ranges.flat_lin_vel_x = [3.0, 3.0]
+    env_cfg.commands.ranges.flat_lin_vel_y = [-0.0, -0.0]
+    env_cfg.commands.ranges.flat_ang_vel_yaw = [0.0, 0.0]
+
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     _, _ = env.reset()
-    
-    print(env.task_startings, env.task_goals)
-    print(env.navigation_path)
-    
     obs = env.get_observations()
     # load policy
     train_cfg.runner.resume = True
-    # train_cfg.runner.load_run = 'Jul02_19-10-19_plane_collect_rate_rldata'
-    # train_cfg.runner.load_run = 'Jul01_16-56-15_plane_collect'
-    # train_cfg.runner.load_run = 'Jul02_15-58-46_plane_collect_rate'
-    # train_cfg.runner.load_run = 'Jul04_10-43-17_plane_collect_rate_reward'
-    # train_cfg.runner.load_run = 'Aug06_01-52-27_ppo_clip0.6'
-    train_cfg.runner.load_run = 'Jan12_07-33-15_ppo_debug'
-    train_cfg.runner.checkpoint = 6200
-    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
+    train_cfg.runner.load_run = 'layernorm'
+    train_cfg.runner.checkpoint = 60000
+    ppo_runner, train_cfg = task_registry.make_teacher_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
     policy = ppo_runner.get_inference_policy(device=env.device)
     
     # export policy as a jit module (used to run it from C++)
@@ -116,22 +117,37 @@ def play(args):
     img_idx = 0
 
     record_actions = []
-    print("STARTING PLAY!")
-    for i in range(1*int(env.max_episode_length)):
-        # print(obs.detach())
 
-        actions = policy(obs.detach())
-        # print(actions.detach())
-        print(env.root_states[:,:3])
-        # print(env.measured_heights[:,:])
-        # return
-        actions[:] = 0
-        actions[:, 0] = 1
-        # print(actions)
-        record_actions.append(actions)
+    history_length = 5
+    trajectory_history = torch.zeros(size=(env.num_envs, history_length, env.num_obs -
+                                            env.privileged_dim - env.height_dim - 3), device = env.device)
+    obs_without_command = torch.concat((obs[:, env.privileged_dim:env.privileged_dim + 6],
+                                        obs[:, env.privileged_dim + 9:-env.height_dim]), dim=1)
+    trajectory_history = torch.concat((trajectory_history[:, 1:], obs_without_command.unsqueeze(1)), dim=1)
+
+    for i in range(1*int(env.max_episode_length) + 3):
+        history = trajectory_history.flatten(1).to(env.device)
+        actions = policy(obs.detach(), history.detach())
+        # actions[:,0] = 0
+        # actions[:, 3] = 0
+        # actions[:, 6] = 0
+        # actions[:, 9] = 0
+        # print(torch.max(actions), torch.min(actions))
 
         obs, _, rews, dones, infos, _, _ = env.step(actions.detach())
-        # import pdb; pdb.set_trace()
+        # if i==4:
+        #     import pdb; pdb.set_trace()
+        # print("OBS:", obs.detach(), history.detach())
+        print("ACT:", actions.detach())
+        # process trajectory history
+        env_ids = dones.nonzero(as_tuple=False).flatten()
+        trajectory_history[env_ids] = 0
+        obs_without_command = torch.concat((obs[:, env.privileged_dim:env.privileged_dim + 6],
+                                            obs[:, env.privileged_dim + 9:-env.height_dim]),
+                                           dim=1)
+        trajectory_history = torch.concat(
+            (trajectory_history[:, 1:], obs_without_command.unsqueeze(1)), dim=1)
+
         if RECORD_FRAMES:
             if i % 2:
                 filename = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'frames', f"{img_idx}.png")
@@ -140,18 +156,12 @@ def play(args):
         if MOVE_CAMERA:
             lootat = env.root_states[0, :3]
             # camara_position = lootat.detach().cpu().numpy() + [0, 1, 0.5]
-            # camara_position = lootat.detach().cpu().numpy() + [0, -1, 0]
-            camara_position = lootat.detach().cpu().numpy() + [-1, 0, 0]
+            camara_position = lootat.detach().cpu().numpy() + [0, -1, 0]
+            # camara_position = lootat.detach().cpu().numpy() + [-1, 0, 0.0]
             env.set_camera(camara_position, lootat)
             # camera_position += camera_vel * env.dt
             # env.set_camera(camera_position, camera_position + camera_direction)
-        if RESET_BY_STEP != 0:
-            if i % RESET_BY_STEP == 0:
-                _,_ = env.reset()
-        
-        if i % 100 == 0:
-            print("Step",i,"command",actions,"recommended command", env.teacher_commands[robot_index].detach().cpu().numpy())        
-        
+
         if i < stop_state_log:
             logger.log_states(
                 {
@@ -178,16 +188,12 @@ def play(args):
                     logger.log_rewards(infos["episode"], num_episodes)
         elif i==stop_rew_log:
             logger.print_rewards()
-    record_actions = torch.concat(record_actions,dim=0)
-    print(record_actions.shape)
-    print(torch.mean(record_actions,dim=0))
 
 if __name__ == '__main__':
     EXPORT_POLICY = True
     RECORD_FRAMES = False
+    # MOVE_CAMERA = True
     MOVE_CAMERA = False
-    RESET_BY_STEP = 0
-    TEST_TEACHER = True
     args = get_args()
     args.rl_device = args.sim_device
     play(args)

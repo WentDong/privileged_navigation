@@ -66,6 +66,9 @@ class BaseTask():
         self.num_actions = cfg.env.num_actions
         self.include_history_steps = cfg.env.include_history_steps
 
+        self.height_dim = cfg.env.height_dim
+        self.privileged_dim = cfg.env.privileged_dim
+
         # optimization flags for pytorch JIT
         torch._C._jit_set_profiling_mode(False)
         torch._C._jit_set_profiling_executor(False)

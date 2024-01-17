@@ -41,6 +41,7 @@ class A1NavigationCfg( LeggedRobotCfg ):
         include_privileged_history_steps = None
         num_observations = 9 + 176
         num_privileged_obs = 9 + 176
+        
         privileged_dim = 24 + 3  # privileged_obs[:,:privileged_dim] is the privileged information in privileged_obs, include 3-dim base linear vel
         height_dim = 187
 
@@ -262,12 +263,12 @@ class A1NavigationCfg( LeggedRobotCfg ):
 
         # curriculum on navigation
         curriculum = True
-        success_epsilon = 0.5 # [m] (Original: 2)
+        success_epsilon = 0.1 # [m] (Original: 2)
 
         class curriculum_range:
             max_starting_xy_curriculum = 2.0 # [m]
             max_goal_xy_curriculum = 2.0 # [m]
-            min_success_epsilon = 0.3 # [m] (Finally: 0.3) 
+            min_success_epsilon = 0.1 # [m] (Finally: 0.3) 
 
 
     
@@ -286,9 +287,9 @@ class A1NavigationCfg( LeggedRobotCfg ):
             # lin_vel_y = [-0.3, 0.3]   # min max [m/s]
             # ang_vel_yaw = [-1.57, 1.57]    # min max [rad/s]
             # heading = [-3.14, 3.14]
-            lin_vel_x = [-0.4, 0.4] # min max [m/s]
-            lin_vel_y = [-0.4, 0.4]   # min max [m/s]
-            ang_vel_yaw = [-0.4, 0.4]    # min max [rad/s]
+            lin_vel_x = [-1, 1] # min max [m/s]
+            lin_vel_y = [-0.5, 0.5]   # min max [m/s]
+            ang_vel_yaw = [-1, 1]    # min max [rad/s]
             heading = [-3.14/4, 3.14/4]
         class choices:
             lin_vel_x = [0.4]
