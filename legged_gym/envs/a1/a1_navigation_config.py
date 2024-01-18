@@ -45,7 +45,7 @@ class A1NavigationCfg( LeggedRobotCfg ):
         privileged_dim = 24 + 3  # privileged_obs[:,:privileged_dim] is the privileged information in privileged_obs, include 3-dim base linear vel
         height_dim = 187
 
-        num_actions = 3 # velocity_x, velocity_y, angular_yaw
+        num_actions = 3 # velocity_x, velocity_y, angular_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
         reference_state_initialization = False
         reference_state_initialization_prob = 0.85
         episode_length_s = 40
@@ -63,7 +63,7 @@ class A1NavigationCfg( LeggedRobotCfg ):
     class terrain( LeggedRobotCfg.terrain):
         mesh_type = 'trimesh'
         measure_heights = True
-        
+        curriculum = False
         max_init_terrain_level = 5
         
         # Navigation Task: 以下参数需要改为机器人头部前方   #11 x 17
@@ -357,6 +357,7 @@ class A1LocomotionCfgPPO( LeggedRobotCfgPPO ):
         reference_state_initialization_prob = 0.85
         amp_motion_files = MOTION_FILES
         history_length = 5
+        num_actions = 12
 
     class policy:
         init_noise_std = 1.0

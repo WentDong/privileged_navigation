@@ -49,7 +49,7 @@ def play(args):
     
     # override some parameters for testing
     # env_cfg.env.mode = 'train'
-    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 1)
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 4)
     env_cfg.terrain.num_rows = 1
     env_cfg.terrain.num_cols = 1
     env_cfg.terrain.curriculum = False
@@ -63,7 +63,7 @@ def play(args):
     train_cfg.runner.amp_num_preload_transitions = 1
 
     env_cfg.terrain.mesh_type = 'trimesh'
-    # env_cfg.terrain.terrain_proportions = [0.0, 0, 0, 0, 0, 1.0]
+    env_cfg.terrain.terrain_proportions = [1.0, 0, 0, 0, 0, 0.0]
     # env_cfg.terrain.terrain_proportions = [0, 1.0, 0, 0, 0, 0]
     # env_cfg.terrain.terrain_proportions = [0, 0, 1.0, 0, 0]
     # env_cfg.terrain.terrain_proportions = [0, 0, 0, 1.0, 0]
@@ -149,8 +149,8 @@ def play(args):
             if i % RESET_BY_STEP == 0:
                 _,_ = env.reset()
         
-        if i % 100 == 0:
-            print("Step",i,"command",actions,"recommended command", env.teacher_commands[robot_index].detach().cpu().numpy())        
+        # if i % 100 == 0:
+        #     print("Step",i,"command",actions,"recommended command", env.teacher_commands[robot_index].detach().cpu().numpy())        
         
         if i < stop_state_log:
             logger.log_states(

@@ -158,8 +158,14 @@ class NavigationTask(BaseTask):
         else:
             privileged_obs = self.privileged_obs_buf
 
+        self.locomotion_obs_buf = torch.clip(self.locomotion_obs_buf, -clip_obs, clip_obs)
+        if self.locomotion_cfg.env.include_history_steps is not None:
+            reset_env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
+            self.locomotion_obs_buf_history.reset(reset_env_ids, self.locomotion_obs_buf[reset_env_ids])
+            self.locomotion_obs_buf_history.insert(self.locomotion_obs_buf)
+
         return policy_obs, privileged_obs
-    # def step(self, actions)
+
     def step(self, commands):
         """ Calculate actions by command, apply actions, simulate, 
         call self.pre_physics_step()
@@ -173,10 +179,28 @@ class NavigationTask(BaseTask):
         '''In step, first record the current states which is used to calculate rewards.'''
         # Navigation Task: actions is speed command
         # import pdb; pdb.set_trace()
+        # self.root_states = torch.tensor([[ 4.6973e+00,  3.1353e+00,  3.5121e-01, -4.4342e-03,  4.5626e-03,
+        #   3.6715e-04,  9.9998e-01, -2.7300e-01, -3.5909e-01,  1.5151e-02,
+        #  -8.6031e-01,  6.8883e-01, -1.0073e-01]], device = self.device)
+        # self.base_ang_vel = torch.tensor([[-0.8589,  0.6904, -0.1025]], device=self.device)
+        # self.projected_gravity = torch.tensor([[ 0.0091,  0.0089, -0.9999]], device = self.device)
+        # self.base_lin_vel = torch.tensor([[-0.2734, -0.3590,  0.0095]], device = self.device)
+        # self.dof_pos = torch.tensor([[ 0.0038,  0.5186, -1.5367,  0.0171,  0.7761, -1.2443, -0.0102,  0.8915, -1.4719, -0.0097,  1.3407, -1.1256]], device = self.device)
+        # self.dof_vel = torch.tensor([[  0.8463,   6.6981,  -1.2024,   0.7976,   2.9476, -11.1295,  -0.1491, 2.6959,  -2.2677,  -0.9284,  -3.7972, -12.3351]], device = self.device)
+
         self.last_commands[:] = self.commands[:]
         self.commands[:] = commands[:]
         self.commands[:, :2] = torch.clip(self.commands[:, :2], self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1])
-        self.commands[:, 2] = torch.clip(self.commands[:, 2], self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1])
+        if self.cfg.commands.heading_command:
+            self.commands[:, 3] = torch.clip(self.commands[:, 3], self.command_ranges["heading"][0], self.command_ranges["heading"][1])
+            forward = quat_apply(self.base_quat, self.forward_vec)
+            heading = torch.atan2(forward[:, 1], forward[:, 0])
+            self.commands[:, 2] = torch.clip(0.5*wrap_to_pi(self.commands[:, 3] - heading), -1., 1.) 
+        else:
+            self.commands[:, 2] = torch.clip(self.commands[:, 2], self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1])
+
+        self.compute_locomotion_observations() # Compute locomotion_observations since the update of commands.
+
         self.rew_buf[:] = 0. # reset reward buffer.
 
         # print("AAAAA LAST POS:", self.last_pos[0])
@@ -184,12 +208,11 @@ class NavigationTask(BaseTask):
         # print("BBBBB CUR POS:", self.last_pos[0])
         # print("CCCCC ROOT STATES:", self.root_states[0,:3])
         # print("::::: IN STEP")
-        print("COMMAND: ", self.commands[0])
+        # print("COMMAND: ", self.commands[0])
         # Calculate speed actions from commands
         '''For a single Command, call 5 locomotion steps.'''
         for it in range(5):
             self.pre_physics_step() # Get locomotion action by pretrained model.
-
             clip_locomotion_actions = self.cfg.normalization.clip_actions
             self.locomotion_actions = torch.clip(self.locomotion_actions, -clip_locomotion_actions, clip_locomotion_actions).to(self.device)
 
@@ -202,10 +225,12 @@ class NavigationTask(BaseTask):
                 if self.device == 'cpu':
                     self.gym.fetch_results(self.sim, True)
                 self.gym.refresh_dof_state_tensor(self.sim)
-                self.base_quat[:] = self.root_states[:, 3:7]
-                self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
-                self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
-                self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
+                # self.base_quat[:] = self.root_states[:, 3:7]
+                # self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
+                # self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
+                # self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
+
+            # import pdb; pdb.set_trace()
             reset_env_ids, terminal_amp_states = self.post_physics_step()
 
             # return clipped obs, clipped states (None), rewards, dones and infos
@@ -230,13 +255,18 @@ class NavigationTask(BaseTask):
             else:
                 privileged_obs = self.privileged_obs_buf
             
-            
+            self.locomotion_obs_buf = torch.clip(self.locomotion_obs_buf, -clip_obs, clip_obs)
+            if self.locomotion_cfg.env.include_history_steps is not None:
+                reset_env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
+                self.locomotion_obs_buf_history.reset(reset_env_ids, self.locomotion_obs_buf[reset_env_ids])
+                self.locomotion_obs_buf_history.insert(self.locomotion_obs_buf)
+
             
 
             # print("EEEEE LAST POS:", self.last_pos[0])
             # print("FFFFF CUR POS:", self.cur_pos[0])
             # print("DDDDD ROOT STATES:", self.root_states[0,:3])
-
+        self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
         self.compute_reward()
         # print("#### Success Avarage Count:", torch.mean(self.success_count.float()), "Curriculum level:", self.navi_curriculum_level)
         return policy_obs, privileged_obs, self.rew_buf, self.reset_buf, self.extras, reset_env_ids, terminal_amp_states
@@ -265,30 +295,24 @@ class NavigationTask(BaseTask):
         # self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
         
         # self.compute_teacher_commands()
-        self.compute_locomotion_observations()
-        clip_obs = self.cfg.normalization.clip_observations
-        self.locomotion_obs_buf = torch.clip(self.locomotion_obs_buf, -clip_obs, clip_obs)
-
-        if self.locomotion_cfg.env.include_history_steps is not None:
-            reset_env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
-            self.locomotion_obs_buf_history.reset(reset_env_ids, self.locomotion_obs_buf[reset_env_ids])
-            self.locomotion_obs_buf_history.insert(self.locomotion_obs_buf)
-
+        # self.compute_locomotion_observations()
+        
         locomotion_obs = self.get_locomotion_observations()
         obs_without_command = torch.concat((locomotion_obs[:, 0:6],
                                             locomotion_obs[:, 9:]), dim=1)
         # print(locomotion_obs.shape)
-        # print(obs_without_command.shape)
+        # print("OBS_WITHOUT_COMMAND:", obs_without_command)
         self.trajectory_history = torch.concat((self.trajectory_history[:, 1:], obs_without_command.unsqueeze(1)), dim=1)
         
 
         # print("locomotion_obs_buf.shape:", self.locomotion_obs_buf.shape)
         # print(self.locomotion_obs_buf)
         history = self.trajectory_history.flatten(1).to(self.device)
+        # print(history.detach())
         # print("OBS:", locomotion_obs.detach(), history.detach())
         # print("COMMANDS IN ACT:", locomotion_obs[:,6:9])
         self.locomotion_actions[:] = self.locomotion_policy(locomotion_obs[:, 6:9].detach(), history.detach())[:]
-        print("ACT:", self.locomotion_actions.detach())
+        # print("ACT:", self.locomotion_actions.detach())
         # return actions
     
     def get_locomotion_observations(self):
@@ -300,10 +324,10 @@ class NavigationTask(BaseTask):
     
     def compute_locomotion_observations(self):
         commands = self.commands[:]
-        print("ANG_VEL:", self.base_ang_vel)
-        print("GRAVITY:", self.projected_gravity)
-        print("DOF_POS:", self.dof_pos)
-        print("DOF_VEL:", self.dof_vel)
+        # print("ANG_VEL:", self.base_ang_vel)
+        # print("GRAVITY:", self.projected_gravity)
+        # print("DOF_POS:", self.dof_pos)
+        # print("DOF_VEL:", self.dof_vel)
         self.locomotion_obs_buf = torch.cat(( 
                                     # self.base_lin_vel * self.obs_scales.lin_vel, # Treate as part privileged_dim in locomotion model, so not included here.
                                     self.base_ang_vel  * self.obs_scales.ang_vel,
@@ -351,14 +375,13 @@ class NavigationTask(BaseTask):
         self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
 
-        self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
-        # self.compute_locomotion_observations()
+        self.compute_locomotion_observations()
 
         self.cur_pos = self.root_states[:, :3].clone().detach().to(self.device)
         # self.last_actions[:] = self.actions[:]
-        print("LAST_LOCOMOTION_ACTION: ", self.last_locomotion_actions[0])
+        # print("LAST_LOCOMOTION_ACTION: ", self.last_locomotion_actions[0])
         self.last_locomotion_actions[:] = self.locomotion_actions[:]
-        print("CUR_LOCOMOTION_ACTION: ", self.locomotion_actions[0])
+        # print("CUR_LOCOMOTION_ACTION: ", self.locomotion_actions[0])
         self.last_dof_pos[:] = self.dof_pos[:]
         self.last_dof_vel[:] = self.dof_vel[:]
         self.last_root_vel[:] = self.root_states[:, 7:13]
@@ -410,11 +433,11 @@ class NavigationTask(BaseTask):
         if len(env_ids) == 0:
             return
         # update curriculum
-        if self.cfg.terrain.curriculum:
-            self._update_terrain_curriculum(env_ids)
+        # if self.cfg.terrain.curriculum:
+        #     self._update_terrain_curriculum(env_ids)
         # avoid updating command curriculum at each step since the maximum command is common to all envs
-        if self.cfg.commands.curriculum and (self.common_step_counter % self.max_episode_length==0):
-            self.update_command_curriculum(env_ids)
+        # if self.cfg.commands.curriculum and (self.common_step_counter % self.max_episode_length==0):
+        #     self.update_command_curriculum(env_ids)
         if self.cfg.task.curriculum:
             self.update_navigation_curriculum(env_ids)
         # reset robot states
@@ -423,13 +446,13 @@ class NavigationTask(BaseTask):
         self._resample_goals(env_ids)
         self._resample_startings(env_ids)
 
-        if self.cfg.env.reference_state_initialization:
-            frames = self.amp_loader.get_full_frame_batch(len(env_ids))
-            self._reset_dofs_amp(env_ids, frames)
-            self._reset_root_states_amp(env_ids, frames)
-        else:
-            self._reset_dofs(env_ids)
-            self._reset_root_states(env_ids)
+        # if self.cfg.env.reference_state_initialization:
+        #     frames = self.amp_loader.get_full_frame_batch(len(env_ids))
+        #     self._reset_dofs_amp(env_ids, frames)
+        #     self._reset_root_states_amp(env_ids, frames)
+        # else:
+        self._reset_dofs(env_ids)
+        self._reset_root_states(env_ids)
 
         # self._resample_commands(env_ids)
 
@@ -520,7 +543,7 @@ class NavigationTask(BaseTask):
                                     # (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,    # 12
                                     # self.dof_vel * self.obs_scales.dof_vel, #12
                                     # self.locomotion_actions         #12
-                                    self.last_commands[:, :3] * self.commands_scale,  #3
+                                    self.commands[:, :3] * self.commands_scale,  #3
                                     ),dim=-1)  
         '''Only contains: Goals, orientation, commands, last commands'''
         # print(self.privileged_obs_buf.shape)
@@ -711,17 +734,29 @@ class NavigationTask(BaseTask):
             [List[gymapi.RigidShapeProperties]]: Modified rigid shape properties
         """
         if self.cfg.domain_rand.randomize_friction:
-            if env_id==0:
-                # prepare friction randomization
-                friction_range = self.cfg.domain_rand.friction_range
-                num_buckets = 64
-                bucket_ids = torch.randint(0, num_buckets, (self.num_envs, 1))
-                friction_buckets = torch_rand_float(friction_range[0], friction_range[1], (num_buckets,1), device='cpu')
-                self.friction_coeffs = friction_buckets[bucket_ids]
-
+            # if env_id==0:
+            #     # prepare friction randomization
+            #     friction_range = self.cfg.domain_rand.friction_range
+            #     num_buckets = 64
+            #     bucket_ids = torch.randint(0, num_buckets, (self.num_envs, 1))
+            #     friction_buckets = torch_rand_float(friction_range[0], friction_range[1], (num_buckets,1), device='cpu')
+            #     self.friction_coeffs = friction_buckets[bucket_ids]
+            #
+            # for s in range(len(props)):
+            #     props[s].friction = self.friction_coeffs[env_id]
+            rng = self.cfg.domain_rand.friction_range
+            self.randomized_frictions[env_id] = np.random.uniform(rng[0], rng[1])
             for s in range(len(props)):
-                props[s].friction = self.friction_coeffs[env_id]
+                props[s].friction = self.randomized_frictions[env_id]
+
+        # if self.cfg.domain_rand.randomize_restitution:
+        if hasattr(self.cfg.domain_rand, "randomize_restitution") and self.cfg.domain_rand.randomize_restitution:
+            rng = self.cfg.domain_rand.restitution_range
+            self.randomized_restitutions[env_id] = np.random.uniform(rng[0], rng[1])
+            for s in range(len(props)):
+                props[s].restitution = self.randomized_restitutions[env_id]
         return props
+
 
     def _process_dof_props(self, props, env_id):
         """ Callback allowing to store/change/randomize the DOF properties of each environment.
@@ -761,20 +796,37 @@ class NavigationTask(BaseTask):
         # randomize base mass
         if self.cfg.domain_rand.randomize_base_mass:
             rng = self.cfg.domain_rand.added_mass_range
-            props[0].mass += np.random.uniform(rng[0], rng[1])
+            added_mass = np.random.uniform(rng[0], rng[1])
+            self.randomized_added_masses[env_id] = added_mass
+            props[0].mass += added_mass
+
+        # randomize com position
+        # if self.cfg.domain_rand.randomize_com_pos:
+        #     rng = self.cfg.domain_rand.com_pos_range
+        #     com_pos = np.random.uniform(rng[0], rng[1])
+        #     self.randomized_com_pos[env_id] = com_pos
+        #     props[0].com =  gymapi.Vec3(com_pos,0,0)
+
+        # if self.cfg.domain_rand.randomize_link_mass:
+        #     rng = self.cfg.domain_rand.link_mass_range
+        #     for i in range(1, len(props)):
+        #         props[i].mass = props[i].mass * np.random.uniform(rng[0], rng[1])
+
         return props
     
     def _post_physics_step_callback(self):
         """ Callback called before computing terminations, rewards, and observations
             Default behaviour: Compute ang vel command based on target and heading, compute measured terrain heights and randomly push robots
         """
+        # ACTUALLY IT SHOULD BE NO USE FOR NAVIGATION TASK except for push_robots.
+
         # Navigation Task：Do not resample commands here.
         # env_ids = (self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt)==0).nonzero(as_tuple=False).flatten()
         # self._resample_commands(env_ids)
         if self.cfg.commands.heading_command:
             forward = quat_apply(self.base_quat, self.forward_vec)
             heading = torch.atan2(forward[:, 1], forward[:, 0])
-            self.commands[:, 2] = torch.clip(0.5*wrap_to_pi(self.commands[:, 3] - heading), -1., 1.)
+            self.commands[:, 2] = torch.clip(0.5*wrap_to_pi(self.commands[:, 3] - heading), -1., 1.) 
 
         if self.cfg.terrain.measure_heights:
             self.measured_heights = self._get_heights()
@@ -833,22 +885,22 @@ class NavigationTask(BaseTask):
         # self._resample_startings(env_ids_to_resample)
         
         
-    def _is_valid_starting(self, env_id):
-        """ Check if the starting is valid: starting should not be in the obstacles.
+    # def _is_valid_starting(self, env_id):
+    #     """ Check if the starting is valid: starting should not be in the obstacles.
         
-        Args:
-            env_id (int): ID of environment to be checked.
-        """
-        start_x, end_x, start_y, end_y = self.meter_to_index(self.task_startings[env_id],self.cfg.task.robot_collision_box)
+    #     Args:
+    #         env_id (int): ID of environment to be checked.
+    #     """
+    #     start_x, end_x, start_y, end_y = self.meter_to_index(self.task_startings[env_id],self.cfg.task.robot_collision_box)
         
-        if np.max(self.terrain.height_field_raw[start_x: end_x, start_y: end_y]) > 0:
-            if self.cfg.task.show_checking:
-                print(f"In checking starting of env {env_id}, starting is in obstacles.")
-            return False
-        else:
-            if self.cfg.task.show_checking:
-                print(f"Set a valid starting of env {env_id} at {self.task_startings[env_id]}.")
-            return True
+    #     if np.max(self.terrain.height_field_raw[start_x: end_x, start_y: end_y]) > 0:
+    #         if self.cfg.task.show_checking:
+    #             print(f"In checking starting of env {env_id}, starting is in obstacles.")
+    #         return False
+    #     else:
+    #         if self.cfg.task.show_checking:
+    #             print(f"Set a valid starting of env {env_id} at {self.task_startings[env_id]}.")
+    #         return True
         
     def _resample_goals(self, env_ids):
         """ Randommly select goals of some environments, scale: m
@@ -871,73 +923,73 @@ class NavigationTask(BaseTask):
         # # If not vaild, regenerate a goal
         # self._resample_goals(env_ids_to_resample)
         
-    def _is_valid_goal(self, env_id):
-        """ Check if the goal is valid: goal should not be in the obstacles, and goals should have a path to startings. If a valid path found, add it to the table.
+    # def _is_valid_goal(self, env_id):
+    #     """ Check if the goal is valid: goal should not be in the obstacles, and goals should have a path to startings. If a valid path found, add it to the table.
         
-        Calls MazeSolver.astar() to check if a path exists.
+    #     Calls MazeSolver.astar() to check if a path exists.
         
-        Args:
-            env_id (int): ID of environment to be checked.
-        """
-        # Check obstacle around
-        start_x, end_x, start_y, end_y = self.meter_to_index(self.task_goals[env_id],self.cfg.task.robot_collision_box)
+    #     Args:
+    #         env_id (int): ID of environment to be checked.
+    #     """
+    #     # Check obstacle around
+    #     start_x, end_x, start_y, end_y = self.meter_to_index(self.task_goals[env_id],self.cfg.task.robot_collision_box)
         
-        if np.max(self.terrain.height_field_raw[start_x: end_x, start_y: end_y]) > 0:
-            if self.cfg.task.show_checking:
-                print(f"In checking goal of env {env_id}, goal is in obstacles.")
-            return False
+    #     if np.max(self.terrain.height_field_raw[start_x: end_x, start_y: end_y]) > 0:
+    #         if self.cfg.task.show_checking:
+    #             print(f"In checking goal of env {env_id}, goal is in obstacles.")
+    #         return False
 
-        # Check if there is a path from starting to goal
-        x0, y0 = self.meter_to_index(self.task_startings[env_id])
-        xn, yn = self.meter_to_index(self.task_goals[env_id])
+    #     # Check if there is a path from starting to goal
+    #     x0, y0 = self.meter_to_index(self.task_startings[env_id])
+    #     xn, yn = self.meter_to_index(self.task_goals[env_id])
         
-        pathfound = MazeSolver(self.terrain.height_field_raw).astar((x0,y0), (xn,yn))
+    #     pathfound = MazeSolver(self.terrain.height_field_raw).astar((x0,y0), (xn,yn))
         
-        if pathfound is None:
-            if self.cfg.task.show_checking:
-                print(f"In checking goal of env {env_id}, no path found.")
-            return False
+    #     if pathfound is None:
+    #         if self.cfg.task.show_checking:
+    #             print(f"In checking goal of env {env_id}, no path found.")
+    #         return False
         
-        pathfound = list(pathfound)
+    #     pathfound = list(pathfound)
         
-        # In self.reset(), env_ids is a tensor of size 0. The key of a dict is better to be an int anyway.
-        if type(env_id) == torch.Tensor:
-            if env_id.numel() == 1:
-                env_id = env_id.item()
-            else:
-                raise TypeError("env_id should be a scalar, but got", env_id, "with size",env_id.size())
+    #     # In self.reset(), env_ids is a tensor of size 0. The key of a dict is better to be an int anyway.
+    #     if type(env_id) == torch.Tensor:
+    #         if env_id.numel() == 1:
+    #             env_id = env_id.item()
+    #         else:
+    #             raise TypeError("env_id should be a scalar, but got", env_id, "with size",env_id.size())
         
-        if len(pathfound) < self.cfg.task.min_path_length:
-            if self.cfg.task.show_checking:
-                print(f"In checking goal of env {env_id}, too close goal.")
-            return False
-        else:
-            self.navigation_path[env_id] = torch.Tensor([[p[0],p[1]] for p in pathfound])     
-            if self.cfg.task.show_checking:
-                print(f"Set a valid goal of env {env_id} at {self.task_goals[env_id]}, have a path of length {len(pathfound)}.")
-            return True
+    #     if len(pathfound) < self.cfg.task.min_path_length:
+    #         if self.cfg.task.show_checking:
+    #             print(f"In checking goal of env {env_id}, too close goal.")
+    #         return False
+    #     else:
+    #         self.navigation_path[env_id] = torch.Tensor([[p[0],p[1]] for p in pathfound])     
+    #         if self.cfg.task.show_checking:
+    #             print(f"Set a valid goal of env {env_id} at {self.task_goals[env_id]}, have a path of length {len(pathfound)}.")
+    #         return True
         
-    def meter_to_index(self, meter_coordinate, area=None):
-        """ Transfer meter representation to index in height_field_raw.
-        """
-        x = meter_coordinate[0]
-        y = meter_coordinate[1]
+    # def meter_to_index(self, meter_coordinate, area=None):
+    #     """ Transfer meter representation to index in height_field_raw.
+    #     """
+    #     x = meter_coordinate[0]
+    #     y = meter_coordinate[1]
         
-        border_idx = int(self.cfg.terrain.border_size / self.cfg.terrain.horizontal_scale)
-        x_idx = border_idx + int(x / self.cfg.terrain.horizontal_scale)
-        y_idx = border_idx + int(x / self.cfg.terrain.horizontal_scale)
+    #     border_idx = int(self.cfg.terrain.border_size / self.cfg.terrain.horizontal_scale)
+    #     x_idx = border_idx + int(x / self.cfg.terrain.horizontal_scale)
+    #     y_idx = border_idx + int(x / self.cfg.terrain.horizontal_scale)
         
-        if area is None:
-            return x_idx, y_idx
-        elif isinstance(area, int):
-            area_incre = int(area / self.cfg.terrain.horizontal_scale)
-            return x_idx - area_incre, x_idx + area_incre, y_idx - area_incre, y_idx + area_incre
-        elif isinstance(area, tuple) or isinstance(area, list):
-            area_incre_x = int(area[0] / self.cfg.terrain.horizontal_scale)
-            area_incre_y = int(area[1] / self.cfg.terrain.horizontal_scale)
-            return x_idx - area_incre_x, x_idx + area_incre_x, y_idx - area_incre_y, y_idx + area_incre_y
-        else:
-            raise NotImplementedError
+    #     if area is None:
+    #         return x_idx, y_idx
+    #     elif isinstance(area, int):
+    #         area_incre = int(area / self.cfg.terrain.horizontal_scale)
+    #         return x_idx - area_incre, x_idx + area_incre, y_idx - area_incre, y_idx + area_incre
+    #     elif isinstance(area, tuple) or isinstance(area, list):
+    #         area_incre_x = int(area[0] / self.cfg.terrain.horizontal_scale)
+    #         area_incre_y = int(area[1] / self.cfg.terrain.horizontal_scale)
+    #         return x_idx - area_incre_x, x_idx + area_incre_x, y_idx - area_incre_y, y_idx + area_incre_y
+    #     else:
+    #         raise NotImplementedError
     
     def _compute_torques(self, actions):
         """ Compute torques from actions.
@@ -989,21 +1041,21 @@ class NavigationTask(BaseTask):
                                               gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
 
     # Navigation Task: 不需要用dof，暂不修改
-    def _reset_dofs_amp(self, env_ids, frames):
-        """ Resets DOF position and velocities of selected environmments
-        Positions are randomly selected within 0.5:1.5 x default positions.
-        Velocities are set to zero.
+    # def _reset_dofs_amp(self, env_ids, frames):
+    #     """ Resets DOF position and velocities of selected environmments
+    #     Positions are randomly selected within 0.5:1.5 x default positions.
+    #     Velocities are set to zero.
 
-        Args:
-            env_ids (List[int]): Environemnt ids
-            frames: AMP frames to initialize motion with
-        """
-        self.dof_pos[env_ids] = AMPLoader.get_joint_pose_batch(frames)
-        self.dof_vel[env_ids] = AMPLoader.get_joint_vel_batch(frames)
-        env_ids_int32 = env_ids.to(dtype=torch.int32)
-        self.gym.set_dof_state_tensor_indexed(self.sim,
-                                              gymtorch.unwrap_tensor(self.dof_state),
-                                              gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+    #     Args:
+    #         env_ids (List[int]): Environemnt ids
+    #         frames: AMP frames to initialize motion with
+    #     """
+    #     self.dof_pos[env_ids] = AMPLoader.get_joint_pose_batch(frames)
+    #     self.dof_vel[env_ids] = AMPLoader.get_joint_vel_batch(frames)
+    #     env_ids_int32 = env_ids.to(dtype=torch.int32)
+    #     self.gym.set_dof_state_tensor_indexed(self.sim,
+    #                                           gymtorch.unwrap_tensor(self.dof_state),
+    #                                           gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
 
     # Navigation Task: state应包含height map?
     # height map 独立出来了
@@ -1031,6 +1083,7 @@ class NavigationTask(BaseTask):
         else:
             self.root_states[env_ids] = self.base_init_state
             self.root_states[env_ids, :3] += self.env_origins[env_ids]
+
         # base velocities
         self.root_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
         env_ids_int32 = env_ids.to(dtype=torch.int32)
@@ -1041,28 +1094,28 @@ class NavigationTask(BaseTask):
         self.last_pos[env_ids, :] = torch.tensor(self.root_states[env_ids, :3]).to(self.device)
 
 
-    def _reset_root_states_amp(self, env_ids, frames):
-        """ Resets ROOT states position and velocities of selected environmments
-            Sets base position based on the curriculum
-            Selects randomized base velocities within -0.5:0.5 [m/s, rad/s]
-        Args:
-            env_ids (List[int]): Environemnt ids
-        """
-        # base position
-        root_pos = AMPLoader.get_root_pos_batch(frames)
-        root_pos[:, :2] = root_pos[:, :2] + self.env_origins[env_ids, :2]
-        self.root_states[env_ids, :3] = root_pos
-        root_orn = AMPLoader.get_root_rot_batch(frames)
-        self.root_states[env_ids, 3:7] = root_orn
-        self.root_states[env_ids, 7:10] = quat_rotate(root_orn, AMPLoader.get_linear_vel_batch(frames))
-        self.root_states[env_ids, 10:13] = quat_rotate(root_orn, AMPLoader.get_angular_vel_batch(frames))
+    # def _reset_root_states_amp(self, env_ids, frames):
+    #     """ Resets ROOT states position and velocities of selected environmments
+    #         Sets base position based on the curriculum
+    #         Selects randomized base velocities within -0.5:0.5 [m/s, rad/s]
+    #     Args:
+    #         env_ids (List[int]): Environemnt ids
+    #     """
+    #     # base position
+    #     root_pos = AMPLoader.get_root_pos_batch(frames)
+    #     root_pos[:, :2] = root_pos[:, :2] + self.env_origins[env_ids, :2]
+    #     self.root_states[env_ids, :3] = root_pos
+    #     root_orn = AMPLoader.get_root_rot_batch(frames)
+    #     self.root_states[env_ids, 3:7] = root_orn
+    #     self.root_states[env_ids, 7:10] = quat_rotate(root_orn, AMPLoader.get_linear_vel_batch(frames))
+    #     self.root_states[env_ids, 10:13] = quat_rotate(root_orn, AMPLoader.get_angular_vel_batch(frames))
 
-        env_ids_int32 = env_ids.to(dtype=torch.int32)
-        self.gym.set_actor_root_state_tensor_indexed(self.sim,
-                                                     gymtorch.unwrap_tensor(self.root_states),
-                                                     gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
-        self.cur_pos[env_ids,:] = torch.tensor(self.root_states[env_ids, :3]).to(self.device)
-        self.last_pos[env_ids, :] = torch.tensor(self.root_states[env_ids, :3]).to(self.device)
+    #     env_ids_int32 = env_ids.to(dtype=torch.int32)
+    #     self.gym.set_actor_root_state_tensor_indexed(self.sim,
+    #                                                  gymtorch.unwrap_tensor(self.root_states),
+    #                                                  gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+    #     self.cur_pos[env_ids,:] = torch.tensor(self.root_states[env_ids, :3]).to(self.device)
+    #     self.last_pos[env_ids, :] = torch.tensor(self.root_states[env_ids, :3]).to(self.device)
     # def _blocked_root_position(self, env_ids, pos):
     #     """ Return whether the spawn point of the robot is blocked by terrain.
     #     """
@@ -1231,6 +1284,8 @@ class NavigationTask(BaseTask):
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
         net_contact_forces = self.gym.acquire_net_contact_force_tensor(self.sim)
+        rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
+
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
@@ -1243,6 +1298,15 @@ class NavigationTask(BaseTask):
         self.base_quat = self.root_states[:, 3:7]
 
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
+
+        # sensor_tensor = self.gym.acquire_force_sensor_tensor(self.sim)
+        # self.gym.refresh_force_sensor_tensor(self.sim)
+        # force_sensor_readings = gymtorch.wrap_tensor(sensor_tensor)
+        # self.sensor_forces = force_sensor_readings.view(self.num_envs, 4, 6)[..., :3]
+
+        self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state)
+        self.rigid_body_pos = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)[..., 0:3]
+        self.rigid_body_lin_vel = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)[...,7:10]
 
         # initialize some data used later on
         self.common_step_counter = 0
@@ -1299,11 +1363,12 @@ class NavigationTask(BaseTask):
         if self.cfg.domain_rand.randomize_gains:
             self.randomized_p_gains, self.randomized_d_gains = self.compute_randomized_gains(self.num_envs)
             
-        self.command_pool = torch.Tensor(list(product(
-            self.cfg.commands.choices.lin_vel_x,
-            self.cfg.commands.choices.lin_vel_y,
-            self.cfg.commands.choices.ang_vel_yaw
-            )))
+        # self.command_pool = torch.Tensor(list(product(
+        #     self.cfg.commands.choices.lin_vel_x,
+        #     self.cfg.commands.choices.lin_vel_y,
+        #     self.cfg.commands.choices.ang_vel_yaw
+        #     )))
+        
         self.trajectory_history = torch.zeros(size=(self.num_envs, self.locomotion_cfg.env.history_length, self.locomotion_cfg.env.num_observations -
                                             self.locomotion_cfg.env.privileged_dim - self.locomotion_cfg.env.height_dim - 3), device = self.device)
         
@@ -1475,10 +1540,13 @@ class NavigationTask(BaseTask):
         self.task_startings = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device, requires_grad=False)
         self.task_startings_yaw = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.task_goals = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device, requires_grad=False)
-        self.teacher_commands = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device, requires_grad=False)
-        self.task_next_landmarks = torch.zeros(self.num_envs, 2, dtype=torch.float, device=self.device, requires_grad=False)
-
+        # self.teacher_commands = torch.zeros(self.num_envs, 3, dtype=torch.float, device=self.device, requires_grad=False)
+        # self.task_next_landmarks = torch.zeros(self.num_envs, 2, dtype=torch.float, device=self.device, requires_grad=False)
         self._get_env_origins()
+
+        self._resample_startings(range(self.num_envs))
+        self._resample_goals(range(self.num_envs))
+
         # self._get_task_goals()
         env_lower = gymapi.Vec3(0., 0., 0.)
         env_upper = gymapi.Vec3(0., 0., 0.)
@@ -1489,9 +1557,11 @@ class NavigationTask(BaseTask):
         for i in range(self.num_envs):
             # create env instance
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
-            pos = self.env_origins[i].clone()
+            pos = self.task_startings[i].clone() * self.cfg.terrain.horizontal_scale
+
             # pos[:2] += torch_rand_float(-2., 2., (2,1), device=self.device).squeeze(1)
-            
+
+
             # while self._blocked_root_position(i,pos):
             #     pos = self.env_origins[i].clone()
             #     pos[:2] += torch_rand_float(-2., 2., (2,1), device=self.device).squeeze(1)
@@ -1516,8 +1586,7 @@ class NavigationTask(BaseTask):
         # self.get_navigation_path()
         
         self.navigation_path = {}
-        self._resample_startings(range(self.num_envs))
-        self._resample_goals(range(self.num_envs))
+
         
         # if self.cfg.env.mode == 'play':
         #     for i in range(self.num_envs):
@@ -1695,29 +1764,29 @@ class NavigationTask(BaseTask):
 
         return heights.view(self.num_envs, -1) * self.terrain.cfg.vertical_scale
 
-    def compute_teacher_commands(self):
-        """ Compute the best command to reach next landmark
-        """
-        for i in range(self.num_envs):
-            base_pos = (self.root_states[i, :3]).cpu()
+    # def compute_teacher_commands(self):
+    #     """ Compute the best command to reach next landmark
+    #     """
+    #     for i in range(self.num_envs):
+    #         base_pos = (self.root_states[i, :3]).cpu()
             
-            new_poses_in_pixel = map(lambda x: self._estimate_next_pose(base_pos,x), self.command_pool)
-            distances_in_pixel = torch.norm(torch.stack(list(new_poses_in_pixel),dim=0).cpu() - self.task_next_landmarks[i].cpu(),dim=1)
+    #         new_poses_in_pixel = map(lambda x: self._estimate_next_pose(base_pos,x), self.command_pool)
+    #         distances_in_pixel = torch.norm(torch.stack(list(new_poses_in_pixel),dim=0).cpu() - self.task_next_landmarks[i].cpu(),dim=1)
 
-            randperm_indices = torch.randperm(self.command_pool.shape[0])
-            best_command_idx = torch.argmin(distances_in_pixel[randperm_indices])
-            best_command = torch.Tensor([*self.command_pool[randperm_indices][best_command_idx]])
-            print(i,best_command)            
-            self.teacher_commands[i,:3] = best_command[:]
+    #         randperm_indices = torch.randperm(self.command_pool.shape[0])
+    #         best_command_idx = torch.argmin(distances_in_pixel[randperm_indices])
+    #         best_command = torch.Tensor([*self.command_pool[randperm_indices][best_command_idx]])
+    #         print(i,best_command)            
+    #         self.teacher_commands[i,:3] = best_command[:]
             
-    def _estimate_next_pose(self, base_pose, command):
-        """ Compute next pose in pixel as format torch.Tensor
+    # def _estimate_next_pose(self, base_pose, command):
+    #     """ Compute next pose in pixel as format torch.Tensor
         
-        Calls estimate_next_pose() in utils.py
-        """
-        new_pose = estimate_next_pose(base_pose, self.cfg.locomotion.time_per_step, command)
-        new_pose_in_pixel = self.meter_to_index(new_pose)
-        return torch.Tensor([new_pose_in_pixel[0],new_pose_in_pixel[1]])
+    #     Calls estimate_next_pose() in utils.py
+    #     """
+    #     new_pose = estimate_next_pose(base_pose, self.cfg.locomotion.time_per_step, command)
+    #     new_pose_in_pixel = self.meter_to_index(new_pose)
+    #     return torch.Tensor([new_pose_in_pixel[0],new_pose_in_pixel[1]])
         
     
     #------------ reward functions----------------

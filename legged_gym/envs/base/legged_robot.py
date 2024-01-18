@@ -120,6 +120,7 @@ class LeggedRobot(BaseTask):
         Args:
             actions (torch.Tensor): Tensor of shape (num_envs, num_actions_per_env)
         """
+        # import pdb; pdb.set_trace()
         clip_actions = self.cfg.normalization.clip_actions
         self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
 
@@ -174,7 +175,7 @@ class LeggedRobot(BaseTask):
                 self.compute_latency_left_obs(torch.arange(self.num_envs, device=self.device))
 
 
-
+        # import pdb; pdb.set_trace()
         reset_env_ids, terminal_amp_states = self.post_physics_step()
 
         # return clipped obs, clipped states (None), rewards, dones and infos
@@ -367,6 +368,11 @@ class LeggedRobot(BaseTask):
     def compute_observations(self):
         """ Computes observations
         """
+        # import pdb; pdb.set_trace()
+        print("ANG_VEL:", self.base_ang_vel)
+        print("GRAVITY:", self.projected_gravity)
+        print("DOF_POS:", self.dof_pos)
+        print("DOF_VEL:", self.dof_vel)
         if(self.cfg.domain_rand.randomize_obs_latency):
             interal = self.latency_interal_range[0] + random.random() * (self.latency_interal_range[1] - self.latency_interal_range[0])
             interal_obs = interal * self.latency_left_obs + (1 - interal) * self.latency_right_obs
