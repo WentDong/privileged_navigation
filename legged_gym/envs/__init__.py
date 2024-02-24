@@ -37,6 +37,7 @@ from legged_gym.utils.task_registry import task_registry
 from .a1.a1_amp_config import A1AMPCfg, A1AMPCfgPPO
 from .a1.a1_config import A1RoughCfg, A1RoughCfgPPO
 from .a1.a1_navigation_config import A1NavigationCfg, A1NavigationCfgPPO, A1LocomotionCfgPPO
+from .a1.a1_navigation_rnn_config import A1NavigationRNNCfg, A1NavigationCfgRNNPPO
 from .a1.a1_amp_flat_config import A1AMPFlatCfg, A1AMPFlatCfgPPO
 from .base.legged_robot import LeggedRobot
 from .base.navigation_task import NavigationTask
@@ -46,3 +47,4 @@ task_registry.register( "a1", LeggedRobot, A1RoughCfg(), A1RoughCfgPPO() )
 task_registry.register( "a1_amp", LeggedRobot, A1AMPCfg(), A1AMPCfgPPO() )
 task_registry.register( "a1_amp_flat", LeggedRobot, A1AMPFlatCfg(), A1AMPFlatCfgPPO() )
 task_registry.register( "a1_navigation", NavigationTask, A1NavigationCfg(), A1NavigationCfgPPO() )
+task_registry.register( "a1_navigation_rnn", NavigationTask, A1NavigationRNNCfg(), A1NavigationCfgRNNPPO() )

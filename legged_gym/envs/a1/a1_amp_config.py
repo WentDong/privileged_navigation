@@ -165,7 +165,8 @@ class A1AMPCfg( LeggedRobotCfg ):
         latency_range = [0.00, 0.02]
 
     class noise:
-        add_noise = True
+        # add_noise = True
+        add_noise = False
         noise_level = 1.0 # scales other values
         class noise_scales:
             dof_pos = 0.03
@@ -224,7 +225,7 @@ class A1AMPCfg( LeggedRobotCfg ):
         max_flat_ang_vel_yaw_curriculum = 4.0
         num_commands = 4 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
         resampling_time = 10. # time before command are changed[s]
-        heading_command = True # if true: compute ang vel command from heading error
+        heading_command = False # if true: compute ang vel command from heading error
         class ranges:
             lin_vel_x = [-0.4, 0.4] # min max [m/s]
             lin_vel_y = [-0.2, 0.2]   # min max [m/s]

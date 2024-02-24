@@ -34,7 +34,7 @@ from legged_gym.envs.base.legged_robot_config import (LeggedRobotCfg,
 
 MOTION_FILES = glob.glob('datasets/mocap_motions/*')
 
-class A1NavigationCfg( LeggedRobotCfg ):
+class A1NavigationRNNCfg( LeggedRobotCfg ):
     class env( LeggedRobotCfg.env ):
         mode = 'train'
         num_envs = 4096#4096
@@ -48,7 +48,7 @@ class A1NavigationCfg( LeggedRobotCfg ):
         privileged_dim = 24 + 3  # privileged_obs[:,:privileged_dim] is the privileged information in privileged_obs, include 3-dim base linear vel
         height_dim = 187
 
-        num_actions = 4 # velocity_x, velocity_y, angular_yaw,  heading (in heading mode ang_vel_yaw is recomputed from heading error)
+        num_actions = 3 # velocity_x, velocity_y, angular_yaw,  heading (in heading mode ang_vel_yaw is recomputed from heading error)
         reference_state_initialization = False
         reference_state_initialization_prob = 0.85
         episode_length_s = 60 #[s]
@@ -259,11 +259,12 @@ class A1NavigationCfg( LeggedRobotCfg ):
             
         class scales:
             # behaviour_cloning = 1.0
-            success = 20
+            # success = 100
             # collision = -10
             # velocity_rate = 0
             towards = 5
             # time_cost = -0.1
+            # imitation = 5.0
             # termination = -30
             # velocity_yaw = - 10
 
@@ -294,13 +295,13 @@ class A1NavigationCfg( LeggedRobotCfg ):
 
         # curriculum on navigation
         # curriculum = True
-        curriculum = True
+        curriculum = False
         success_epsilon = 0.4 # [m] (Original: 2)
 
         class curriculum_range:
-            max_starting_xy_curriculum =5.0 # [m]
-            max_goal_xy_curriculum = 5.0 # [m]
-            min_success_epsilon = 0.2 # [m] (Finally: 0.3) 
+            max_starting_xy_curriculum = 10.0 # [m]
+            max_goal_xy_curriculum = 10.0 # [m]
+            min_success_epsilon = 0.3 # [m] (Finally: 0.3) 
 
 
     
@@ -315,7 +316,7 @@ class A1NavigationCfg( LeggedRobotCfg ):
         max_lin_vel_x_curriculum = 1.
         max_lin_vel_y_curriculum = 1.
         max_ang_vel_yaw_curriculum = 1.0
-        num_commands = 4 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
+        num_commands = 3 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
         # resampling_time = 10. # time before command are changed[s] NO USE
         heading_command = False # if true: compute ang vel command from heading error
         class ranges:
@@ -325,7 +326,7 @@ class A1NavigationCfg( LeggedRobotCfg ):
             # heading = [-3.14, 3.14]
             lin_vel_x = [-1., 1.] # min max [m/s]
             # lin_vel_x = [0.5, 0.5]
-            lin_vel_y = [-0.2, 0.2]   # min max [m/s]
+            lin_vel_y = [-1., 1.]   # min max [m/s]
             ang_vel_yaw = [-1., 1.]
             # ang_vel_yaw = [0, 0]    # min max [rad/s]
             heading = [-3.14/4, 3.14/4]
@@ -334,26 +335,27 @@ class A1NavigationCfg( LeggedRobotCfg ):
             lin_vel_y = [0.0]
             ang_vel_yaw = [-0.4, -0.3,-0.2, -0.1, 0, 0.1, 0.2, 0.3, 0.4]
 
-class A1NavigationCfgPPO( LeggedRobotCfgPPO ):
+class A1NavigationCfgRNNPPO( LeggedRobotCfgPPO ):
     runner_class_name = 'OnPolicyRunner'
     
     class policy:         
         # init_noise_std = 0.7
         # include_history_steps = 5
         include_history_steps = None
-        actor_hidden_dims = [256, 128, 64]
-        critic_hidden_dims = [256, 128, 64]
-        activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
+        MLP_hidden_dims = [512, 512]
+        latent_dim = 512
+        activation = 'relu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
 
         '''If use_tanh, set the noise_std as 0.25, otherwise, the output will be multiple the commands_scale(0.25) after clipping -4,4'''
         # use_tanh = False
         # init_noise_std = 1.0
 
         use_tanh = True
-        init_noise_std = 0.25
+        # init_noise_std = 0.25
 
         rnn_num_layers = 1
-        rnn_hidden_size = 256
+        rnn_hidden_size = 512
+        rnn_type = 'gru'
 
     class algorithm:
         # training params
@@ -361,7 +363,7 @@ class A1NavigationCfgPPO( LeggedRobotCfgPPO ):
         # use_clipped_value_loss = True
         use_clipped_value_loss = False
         clip_param = 0.2
-        # entropy_coef = 1e-31
+        # entropy_coef = 1e-3
         entropy_coef = 0.01
         num_learning_epochs = 5
         num_mini_batches = 4 # mini batch size = num_envs*nsteps / nminibatches
@@ -378,7 +380,7 @@ class A1NavigationCfgPPO( LeggedRobotCfgPPO ):
         # logging
         save_interval = 200 # check for potential saves every this many iterations
         experiment_name = 'a1_navigation_test'
-        run_name = 'PPO_NAV_MLP'
+        run_name = 'PPO_NAV_TEST'
         
         # load and resume
         resume = False
@@ -386,8 +388,8 @@ class A1NavigationCfgPPO( LeggedRobotCfgPPO ):
         checkpoint = -1 # -1 = last saved model
         resume_path = None # updated from load_run and chkpt
         
-        # policy_class_name = 'ActorCriticRecurrent'
-        policy_class_name = "ActorCritic"
+        policy_class_name = 'ActorCriticRecurrent'
+        # policy_class_name = "ActorCritic"
         algorithm_class_name = 'PPO'
         num_steps_per_env = 24 # per iteration
         max_iterations = 10000 # number of policy updates

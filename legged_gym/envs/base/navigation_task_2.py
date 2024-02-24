@@ -45,11 +45,13 @@ from typing import Tuple, Dict
 from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs.base.base_task import BaseTask
 from legged_gym.utils.terrain import Terrain
+from legged_gym.utils.helpers import class_to_dict, get_load_path
 from legged_gym.utils.math_utils import quat_apply_yaw, wrap_to_pi, torch_rand_sqrt_float
 from legged_gym.utils.helpers import class_to_dict
 from .legged_robot_config import LeggedRobotCfg
 from rsl_rl.datasets.motion_loader import AMPLoader
-
+from rsl_rl.modules.actor_critic import ActorCritic
+from rsl_rl.modules.actor_critic_teacher import TeacherActorCritic
 
 COM_OFFSET = torch.tensor([0.012731, 0.002186, 0.000515])
 HIP_OFFSETS = torch.tensor([
@@ -58,6 +60,25 @@ HIP_OFFSETS = torch.tensor([
     [-0.183, 0.047, 0.],
     [-0.183, -0.047, 0.]]) + COM_OFFSET
 
+''' REWRITE OF CODE NAVIGATION_TASK, BASED ON NEW VERSION OF LEGGED_ROBOT.'''
+'''
+This version's idea: 
+TODO LIST:
+1. Reshape the commands in 4 dimension, which is compatible with angular control or heading control mode.
+2. Reconstruct Step: 
+    The input is velocity command,
+    env.step will call 5 times of locomotion policy.
+    The output observations buffer, reward buffer are all for the navigation policy.
+    Which is the most important part actually.
+
+3. Reshape the observation buffer, and the reward buffer for navigation policy.
+4. Add navigation curriculum, with success epsilon, staring_range etc.
+5. Add navigation reward function, with success reward, distance reward, and termination reward.
+6. Keep enough domain randomization.
+
+7 Load the pretrained locomotion policy in the initialization of environment.
+*. IN FUTURE, Load the pretrained locomotion policy at the initialization of navigation policy, which makes finetuning easier.
+'''
 
 class NavigationTask(BaseTask):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
@@ -103,6 +124,58 @@ class NavigationTask(BaseTask):
 
         if self.cfg.env.reference_state_initialization:
             self.amp_loader = AMPLoader(motion_files=self.cfg.env.amp_motion_files, device=self.device, time_between_frames=self.dt)
+        
+        self.initialize_locomotion_policy()
+    
+    def initialize_locomotion_policy(self):
+        """ Load locomotion model from cfg. We only need actor part of ActorCritic.
+            Refer to play.py
+        """
+        # set path to load model
+        locomotion_cfg_class = eval(self.cfg.locomotion.train_cfg_class_name)
+        self.locomotion_cfg = locomotion_cfg_class()
+        self.locomotion_cfg.runner.resume = True
+        self.locomotion_cfg.runner.load_run = self.cfg.locomotion.load_run
+        self.locomotion_cfg.runner.checkpoint = self.cfg.locomotion.checkpoint
+        locomotion_cfg_dict = class_to_dict(self.locomotion_cfg)
+        # load previously trained model
+        resume_path = get_load_path(
+                                    root=os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', self.cfg.locomotion.experiment_name), 
+                                    load_run=self.locomotion_cfg.runner.load_run, 
+                                    checkpoint=self.locomotion_cfg.runner.checkpoint
+                                    )
+
+        # Imitate rsl_rl.runners.OnPolicyRunners.__init__
+        actor_critic_class = eval(self.locomotion_cfg.runner.policy_class_name) # ActorCritic
+
+        if self.locomotion_cfg.env.include_history_steps is not None:
+            num_actor_obs = self.locomotion_cfg.env.num_observations * self.locomotion_cfg.env.include_history_steps
+        else:
+            num_actor_obs = self.locomotion_cfg.env.num_observations
+
+        if self.cfg.locomotion.num_privileged_obs is not None:
+            num_critic_obs = self.cfg.locomotion.num_privileged_obs 
+        else:
+            num_critic_obs = self.cfg.locomotion.num_observations
+        self.locomotion_actor_critic: ActorCritic = actor_critic_class( num_actor_obs=num_actor_obs,
+                                                        num_critic_obs=num_critic_obs,
+                                                        num_actions=self.locomotion_cfg.env.num_actions,
+                                                        height_dim = self.locomotion_cfg.env.height_dim,
+                                                        privileged_dim = self.locomotion_cfg.env.privileged_dim,
+                                                        history_dim = self.locomotion_cfg.env.history_length * (self.locomotion_cfg.env.num_observations -
+                                                        self.locomotion_cfg.env.privileged_dim - self.locomotion_cfg.env.height_dim - 3),
+                                                        **locomotion_cfg_dict["policy"]).to(self.device)
+        print(f"Loading locomotion model from: {resume_path}")
+        loaded_dict = torch.load(resume_path, map_location=self.device)
+        
+        self.locomotion_actor_critic.load_state_dict(loaded_dict['model_state_dict'])
+        # self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict']) # need self.alg: PPO
+        # self.current_learning_iteration = loaded_dict['iter']
+        
+        # Imitate rsl_rl.runners.OnPolicyRunners.get_inference_policy
+        self.locomotion_actor_critic.eval()
+        self.locomotion_actor_critic.to(self.device)
+        self.locomotion_policy = self.locomotion_actor_critic.act_inferenc_without_privileged
 
     def reset(self):
         """ Reset all robots"""
@@ -111,8 +184,79 @@ class NavigationTask(BaseTask):
             self.obs_buf_history.reset(
                 torch.arange(self.num_envs, device=self.device),
                 self.obs_buf[torch.arange(self.num_envs, device=self.device)])
-        obs, privileged_obs, _, _, _, _, _ = self.step(torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
+        if self.locomotion_cfg.env.include_history_steps is not None:
+            self.locomotion_obs_buf_history.reset(
+                torch.arange(self.num_envs, device=self.device),
+                self.locomotion_obs_buf[torch.arange(self.num_envs, device=self.device)])
+        obs, privileged_obs, _, _, _, _, _ = self.initial_step()
         return obs, privileged_obs
+
+    def initial_step(self):
+        self.locomotion_actions = torch.zeros((self.num_envs, self.locomotion_cfg.env.num_actions), device=self.device)
+        rng = self.latency_range
+        action_latency = random.randint(rng[0], rng[1])
+        # action_update_count = 0
+
+        # step physics and render each frame
+        self.render()
+        for _ in range(self.cfg.control.decimation):
+            #update action
+            # if (action_update_count == action_latency):
+            #     self.latency_actions[:] = self.locomotion_actions[:]
+            # action_update_count += 1
+            if (self.cfg.domain_rand.randomize_action_latency and _ < action_latency):
+                self.torques = self._compute_torques(self.last_locomotion_actions).view(self.torques.shape)
+            else:
+                self.torques = self._compute_torques(self.locomotion_actions).view(self.torques.shape)
+
+            if(self.cfg.domain_rand.randomize_motor_strength):
+                rng = self.cfg.domain_rand.motor_strength_range
+                self.torques = self.torques * torch_rand_float(rng[0], rng[1], self.torques.shape, device=self.device)
+
+
+            self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
+            self.gym.simulate(self.sim)
+            if self.device == 'cpu':
+                self.gym.fetch_results(self.sim, True)
+            self.gym.refresh_dof_state_tensor(self.sim)
+
+            if(self.cfg.domain_rand.randomize_obs_latency and _ == (self.cfg.control.decimation - 1 - self.latency_range[0])):
+                self.gym.refresh_actor_root_state_tensor(self.sim)
+                self.gym.refresh_net_contact_force_tensor(self.sim)
+                self.gym.refresh_force_sensor_tensor(self.sim)
+                # prepare quantities
+                self.base_quat[:] = self.root_states[:, 3:7]
+                self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
+                self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
+                self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
+                self.compute_latency_right_obs(torch.arange(self.num_envs, device=self.device))
+
+            if(self.cfg.domain_rand.randomize_obs_latency and _ == (self.cfg.control.decimation - 1 - self.latency_range[1])):
+                self.gym.refresh_actor_root_state_tensor(self.sim)
+                self.gym.refresh_net_contact_force_tensor(self.sim)
+                self.gym.refresh_force_sensor_tensor(self.sim)
+                # prepare quantities
+                self.base_quat[:] = self.root_states[:, 3:7]
+                self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
+                self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
+                self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
+                self.compute_latency_left_obs(torch.arange(self.num_envs, device=self.device))
+
+
+
+        reset_env_ids, terminal_amp_states = self.post_physics_step()
+
+        # return clipped obs, clipped states (None), rewards, dones and infos
+        clip_obs = self.cfg.normalization.clip_observations
+        self.obs_buf = torch.clip(self.obs_buf, -clip_obs, clip_obs)
+        if self.cfg.env.include_history_steps is not None:
+            self.obs_buf_history.reset(reset_env_ids, self.obs_buf[reset_env_ids])
+            self.obs_buf_history.insert(self.obs_buf)
+            policy_obs = self.obs_buf_history.get_obs_vec(np.arange(self.include_history_steps))
+        else:
+            policy_obs = self.obs_buf
+        if self.privileged_obs_buf is not None:
+            self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
 
     def step(self, actions):
         """ Apply actions, simulate, call self.post_physics_step()
@@ -121,7 +265,7 @@ class NavigationTask(BaseTask):
             actions (torch.Tensor): Tensor of shape (num_envs, num_actions_per_env)
         """
         clip_actions = self.cfg.normalization.clip_actions
-        self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
+        self.locomotion_actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
 
         #for action latency
         rng = self.latency_range
@@ -133,12 +277,12 @@ class NavigationTask(BaseTask):
         for _ in range(self.cfg.control.decimation):
             #update action
             # if (action_update_count == action_latency):
-            #     self.latency_actions[:] = self.actions[:]
+            #     self.latency_actions[:] = self.locomotion_actions[:]
             # action_update_count += 1
             if (self.cfg.domain_rand.randomize_action_latency and _ < action_latency):
-                self.torques = self._compute_torques(self.last_actions).view(self.torques.shape)
+                self.torques = self._compute_torques(self.last_locomotion_actions).view(self.torques.shape)
             else:
-                self.torques = self._compute_torques(self.actions).view(self.torques.shape)
+                self.torques = self._compute_torques(self.locomotion_actions).view(self.torques.shape)
 
             if(self.cfg.domain_rand.randomize_motor_strength):
                 rng = self.cfg.domain_rand.motor_strength_range
@@ -242,8 +386,8 @@ class NavigationTask(BaseTask):
 
         self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
 
-        self.last_last_actions[:] = self.last_actions[:]
-        self.last_actions[:] = self.actions[:]
+        self.last_last_locomotion_actions[:] = self.last_locomotion_actions[:]
+        self.last_locomotion_actions[:] = self.locomotion_actions[:]
         self.last_dof_pos[:] = self.dof_pos[:]
         self.last_dof_vel[:] = self.dof_vel[:]
         self.last_root_vel[:] = self.root_states[:, 7:13]
@@ -296,8 +440,8 @@ class NavigationTask(BaseTask):
             self.randomized_d_gains[env_ids] = new_randomized_gains[1]
 
         # reset buffers
-        self.last_actions[env_ids] = 0.
-        self.last_last_actions[env_ids] = 0
+        self.last_locomotion_actions[env_ids] = 0.
+        self.last_last_locomotion_actions[env_ids] = 0
         self.latency_actions[env_ids] = 0.
         self.last_dof_pos[env_ids] = 0
         self.last_dof_vel[env_ids] = 0.
@@ -374,7 +518,7 @@ class NavigationTask(BaseTask):
                                         interal_obs[:, :6],
                                         self.commands[:, :3] * self.commands_scale,
                                         interal_obs[:, 6:],
-                                        self.actions
+                                        self.locomotion_actions
                                         ),dim=-1)
         else:
             self.privileged_obs_buf = torch.cat((  self.base_lin_vel * self.obs_scales.lin_vel,
@@ -383,7 +527,7 @@ class NavigationTask(BaseTask):
                                         self.commands[:, :3] * self.commands_scale,
                                         (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
                                         self.dof_vel * self.obs_scales.dof_vel,
-                                        self.actions
+                                        self.locomotion_actions
                                         ),dim=-1)
 
         if (self.cfg.env.privileged_obs):
@@ -877,9 +1021,9 @@ class NavigationTask(BaseTask):
         self.torques = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.p_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.d_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.last_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.last_last_actions = torch.zeros_like(self.last_actions)
+        self.locomotion_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
+        self.last_locomotion_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
+        self.last_last_locomotion_actions = torch.zeros_like(self.last_locomotion_actions)
         # for latency
         self.latency_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
                                            requires_grad=False)
@@ -1285,7 +1429,7 @@ class NavigationTask(BaseTask):
     
     def _reward_action_rate(self):
         # Penalize changes in actions
-        return torch.sum(torch.square(self.last_actions - self.actions), dim=1)
+        return torch.sum(torch.square(self.last_locomotion_actions - self.locomotion_actions), dim=1)
     
     def _reward_collision(self):
         # Penalize collisions on selected bodies
@@ -1349,8 +1493,8 @@ class NavigationTask(BaseTask):
 
     # ------------newly added reward functions----------------
     def _reward_action_magnitude(self):
-        return torch.sum(torch.square(torch.maximum(torch.abs(self.actions[:,[0,3,6,9]]) - 1.0,torch.zeros_like(self.actions[:,[0,3,6,9]]))), dim=1)
-        # return torch.sum(torch.square(self.actions[:, [0, 3, 6, 9]]), dim=1)
+        return torch.sum(torch.square(torch.maximum(torch.abs(self.locomotion_actions[:,[0,3,6,9]]) - 1.0,torch.zeros_like(self.locomotion_actions[:,[0,3,6,9]]))), dim=1)
+        # return torch.sum(torch.square(self.locomotion_actions[:, [0, 3, 6, 9]]), dim=1)
 
 
     def _reward_power(self):
@@ -1360,7 +1504,7 @@ class NavigationTask(BaseTask):
         return torch.var(torch.abs(self.torques * self.dof_vel), dim=1)
 
     def _reward_smoothness(self):
-        return torch.sum(torch.square(self.last_last_actions - 2*self.last_actions + self.actions), dim=1)
+        return torch.sum(torch.square(self.last_last_locomotion_actions - 2*self.last_locomotion_actions + self.locomotion_actions), dim=1)
 
     def _reward_clearance(self):
         # foot_pos = self.rigid_body_pos[:, self.feet_indices,:]

@@ -47,6 +47,7 @@ class ActorCritic(nn.Module):
                  activation='elu',
                  init_noise_std=1.0,
                  fixed_std=False,
+                 use_tanh=False,
                  **kwargs):
         if kwargs:
             print("ActorCritic.__init__ got unexpected arguments, which will be ignored: " + str(
@@ -68,6 +69,8 @@ class ActorCritic(nn.Module):
             else:
                 actor_layers.append(nn.Linear(actor_hidden_dims[l], actor_hidden_dims[l + 1]))
                 actor_layers.append(activation)
+        if use_tanh:
+            actor_layers.append(nn.Tanh())
         self.actor = nn.Sequential(*actor_layers)
 
         # Value function

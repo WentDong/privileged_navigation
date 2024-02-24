@@ -53,7 +53,7 @@ class RolloutStorage:
             self.__init__()
 
     def __init__(self, num_envs, num_transitions_per_env, obs_shape, privileged_obs_shape, actions_shape,
-                 history_obs_dim = 42, history_length = 5, device='cpu'):
+                 history_obs_dim = 0, history_length = 0, device='cpu'):
 
         self.device = device
 
@@ -88,8 +88,8 @@ class RolloutStorage:
         self.num_envs = num_envs
 
         # rnn
-        self.saved_hidden_states_a = None
-        self.saved_hidden_states_c = None
+        self.saved_hidden_states = None
+        self.saved_hidden_states = None
 
         self.step = 0
 
@@ -113,20 +113,20 @@ class RolloutStorage:
         self.step += 1
 
     def _save_hidden_states(self, hidden_states):
-        if hidden_states is None or hidden_states==(None, None):
+        if hidden_states is None or hidden_states==(None,):
             return
         # make a tuple out of GRU hidden state sto match the LSTM format
-        hid_a = hidden_states[0] if isinstance(hidden_states[0], tuple) else (hidden_states[0],)
-        hid_c = hidden_states[1] if isinstance(hidden_states[1], tuple) else (hidden_states[1],)
+        hid = hidden_states if isinstance(hidden_states, tuple) else (hidden_states,)
+
 
         # initialize if needed 
-        if self.saved_hidden_states_a is None:
-            self.saved_hidden_states_a = [torch.zeros(self.observations.shape[0], *hid_a[i].shape, device=self.device) for i in range(len(hid_a))]
-            self.saved_hidden_states_c = [torch.zeros(self.observations.shape[0], *hid_c[i].shape, device=self.device) for i in range(len(hid_c))]
+        if self.saved_hidden_states is None:
+            self.saved_hidden_states = [torch.zeros(self.observations.shape[0], *hid[i].shape, device=self.device) for i in range(len(hid))]
+
         # copy the states
-        for i in range(len(hid_a)):
-            self.saved_hidden_states_a[i][self.step].copy_(hid_a[i])
-            self.saved_hidden_states_c[i][self.step].copy_(hid_c[i])
+        for i in range(len(hid)):
+            self.saved_hidden_states[i][self.step].copy_(hid[i])
+
 
 
     def clear(self):
@@ -194,10 +194,13 @@ class RolloutStorage:
                 old_mu_batch = old_mu[batch_idx]
                 old_sigma_batch = old_sigma[batch_idx]
 
-                history_batch = history[batch_idx]
-
-                yield obs_batch, critic_observations_batch, actions_batch, history_batch, target_values_batch, advantages_batch, returns_batch, \
-                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None
+                history_batch = history[batch_idx] 
+                if self.history_obs_dim>0 and self.history_length>0:
+                    yield obs_batch, critic_observations_batch, actions_batch, history_batch, target_values_batch, advantages_batch, returns_batch, \
+                        old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None
+                else:
+                    yield obs_batch, critic_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
+                        old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None
 
     # for RNNs only
     def reccurent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
@@ -238,15 +241,13 @@ class RolloutStorage:
                 # then take only time steps after dones (flattens num envs and time dimensions),
                 # take a batch of trajectories and finally reshape back to [num_layers, batch, hidden_dim]
                 last_was_done = last_was_done.permute(1, 0)
-                hid_a_batch = [ saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj].transpose(1, 0).contiguous()
-                                for saved_hidden_states in self.saved_hidden_states_a ] 
-                hid_c_batch = [ saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj].transpose(1, 0).contiguous()
-                                for saved_hidden_states in self.saved_hidden_states_c ]
+                hid_batch = [ saved_hidden_states.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj].transpose(1, 0).contiguous()
+                                for saved_hidden_states in self.saved_hidden_states ] 
                 # remove the tuple for GRU
-                hid_a_batch = hid_a_batch[0] if len(hid_a_batch)==1 else hid_a_batch
-                hid_c_batch = hid_c_batch[0] if len(hid_c_batch)==1 else hid_a_batch
+                hid_batch = hid_batch[0] if len(hid_batch)==1 else hid_batch
+
 
                 yield obs_batch, critic_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, \
-                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (hid_a_batch, hid_c_batch), masks_batch
+                       old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, hid_batch, masks_batch
                 
                 first_traj = last_traj

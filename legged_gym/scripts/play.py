@@ -38,6 +38,7 @@ os.sys.path.insert(0, parentdir)
 import isaacgym
 import numpy as np
 import torch
+
 from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs import *
 from legged_gym.utils import (Logger, export_policy_as_jit, get_args,
@@ -49,9 +50,9 @@ def play(args):
     
     # override some parameters for testing
     # env_cfg.env.mode = 'train'
-    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 1)
-    env_cfg.terrain.num_rows = 1
-    env_cfg.terrain.num_cols = 1
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 10)
+    env_cfg.terrain.num_rows = 2
+    env_cfg.terrain.num_cols = 2
     env_cfg.terrain.curriculum = False
     env_cfg.noise.add_noise = False
     # env_cfg.domain_rand.randomize_friction = True
@@ -63,7 +64,8 @@ def play(args):
     train_cfg.runner.amp_num_preload_transitions = 1
 
     env_cfg.terrain.mesh_type = 'trimesh'
-    # env_cfg.terrain.terrain_proportions = [0.0, 0, 0, 0, 0, 1.0]
+    env_cfg.terrain.terrain_proportions = [1, 0, 0, 0, 0]
+
     # env_cfg.terrain.terrain_proportions = [0, 1.0, 0, 0, 0, 0]
     # env_cfg.terrain.terrain_proportions = [0, 0, 1.0, 0, 0]
     # env_cfg.terrain.terrain_proportions = [0, 0, 0, 1.0, 0]
@@ -94,8 +96,11 @@ def play(args):
     # train_cfg.runner.load_run = 'Jul02_15-58-46_plane_collect_rate'
     # train_cfg.runner.load_run = 'Jul04_10-43-17_plane_collect_rate_reward'
     # train_cfg.runner.load_run = 'Aug06_01-52-27_ppo_clip0.6'
-    train_cfg.runner.load_run = 'Jan12_07-33-15_ppo_debug'
-    train_cfg.runner.checkpoint = 6200
+    # train_cfg.runner.load_run = 'Jan29_15-26-06_Large_success_reward'
+    train_cfg.runner.load_run = 'Jan29_14-30-44_try_to_nav_tanh'
+    # train_cfg.runner.experiment_name = "RNN_TOY_CASE"
+    train_cfg.runner.experiment_name = "MLP_TOY_CASE"
+    train_cfg.runner.checkpoint = 10000
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
     policy = ppo_runner.get_inference_policy(device=env.device)
     
@@ -114,6 +119,18 @@ def play(args):
     camera_vel = np.array([1., 1., 0.])
     camera_direction = np.array(env_cfg.viewer.lookat) - np.array(env_cfg.viewer.pos)
     img_idx = 0
+    print(env.task_startings)
+    print(env.task_goals)
+    print(env.env_origins)
+    # print(env.height_samples)
+    print(env.root_states[:,:3])
+    # import pdb; pdb.set_trace()
+    # import matplotlib.pyplot as plt
+    # '''plot height map which represents in height_samples'''
+
+    # plt.figure()
+    # plt.imshow(env.height_samples.detach().cpu().numpy())
+    # plt.show()
 
     record_actions = []
     print("STARTING PLAY!")
@@ -122,11 +139,11 @@ def play(args):
 
         actions = policy(obs.detach())
         # print(actions.detach())
-        print(env.root_states[:,:3])
+        # print(env.root_states[:,:3])
         # print(env.measured_heights[:,:])
         # return
-        actions[:] = 0
-        actions[:, 0] = 1
+        # actions[:] = 0
+        # actions[:, 0] = 1
         # print(actions)
         record_actions.append(actions)
 
@@ -149,8 +166,8 @@ def play(args):
             if i % RESET_BY_STEP == 0:
                 _,_ = env.reset()
         
-        if i % 100 == 0:
-            print("Step",i,"command",actions,"recommended command", env.teacher_commands[robot_index].detach().cpu().numpy())        
+        # if i % 100 == 0:
+        #     print("Step",i,"command",actions,"recommended command", env.teacher_commands[robot_index].detach().cpu().numpy())        
         
         if i < stop_state_log:
             logger.log_states(

@@ -74,7 +74,7 @@ def play(args):
     train_cfg.runner.amp_num_preload_transitions = 1
 
     env_cfg.terrain.mesh_type = 'trimesh'
-    env_cfg.terrain.terrain_proportions = [0.0, 0, 0, 0, 1]
+    env_cfg.terrain.terrain_proportions = [1.0, 0, 0, 0, 0]
     # env_cfg.terrain.terrain_proportions = [0, 1.0, 0, 0, 0]
     # env_cfg.terrain.terrain_proportions = [0, 0, 1.0, 0, 0]
     # env_cfg.terrain.terrain_proportions = [0, 0, 0, 1.0, 0]
@@ -92,14 +92,14 @@ def play(args):
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     _, _ = env.reset()
-    obs = env.get_observations()
     # load policy
     train_cfg.runner.resume = True
     train_cfg.runner.load_run = 'layernorm'
     train_cfg.runner.checkpoint = 60000
     ppo_runner, train_cfg = task_registry.make_teacher_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
     policy = ppo_runner.get_inference_policy(device=env.device)
-    
+    obs = env.get_observations()
+
     # export policy as a jit module (used to run it from C++)
     if EXPORT_POLICY:
         path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 'exported', 'policies')
@@ -117,17 +117,28 @@ def play(args):
     img_idx = 0
 
     record_actions = []
+    print("root_states:", env.root_states)
+    print("base_ang_vel:", env.base_ang_vel)
+    print("projected_gravity:", env.projected_gravity) 
+    print("base_lin_vel:", env.base_lin_vel)
+    print("dof_pos:", env.dof_pos)
+    print("dof_vel:", env.dof_vel)
 
+    # import pdb; pdb.set_trace()
     history_length = 5
     trajectory_history = torch.zeros(size=(env.num_envs, history_length, env.num_obs -
                                             env.privileged_dim - env.height_dim - 3), device = env.device)
     obs_without_command = torch.concat((obs[:, env.privileged_dim:env.privileged_dim + 6],
                                         obs[:, env.privileged_dim + 9:-env.height_dim]), dim=1)
+    print("OBS_WITHOUT_COMMAND:", obs_without_command)
     trajectory_history = torch.concat((trajectory_history[:, 1:], obs_without_command.unsqueeze(1)), dim=1)
 
     for i in range(1*int(env.max_episode_length) + 3):
         history = trajectory_history.flatten(1).to(env.device)
+        # print(history.detach())
+
         actions = policy(obs.detach(), history.detach())
+        print("ACT: ", actions.detach())
         # actions[:,0] = 0
         # actions[:, 3] = 0
         # actions[:, 6] = 0
@@ -136,15 +147,17 @@ def play(args):
 
         obs, _, rews, dones, infos, _, _ = env.step(actions.detach())
         # if i==4:
-        #     import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
         # print("OBS:", obs.detach(), history.detach())
-        print("ACT:", actions.detach())
+        # print("ACT:", actions.detach())
         # process trajectory history
         env_ids = dones.nonzero(as_tuple=False).flatten()
         trajectory_history[env_ids] = 0
         obs_without_command = torch.concat((obs[:, env.privileged_dim:env.privileged_dim + 6],
                                             obs[:, env.privileged_dim + 9:-env.height_dim]),
                                            dim=1)
+        print("OBS_WITHOUT_COMMAND:", obs_without_command)
+
         trajectory_history = torch.concat(
             (trajectory_history[:, 1:], obs_without_command.unsqueeze(1)), dim=1)
 

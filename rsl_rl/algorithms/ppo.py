@@ -65,6 +65,14 @@ class PPO:
         self.actor_critic.to(self.device)
         self.storage = None # initialized later
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
+
+        # Froze actor
+        # for name, param in self.actor_critic.named_parameters():
+        #     print("name: ", name)
+        #     if "actor" in name:    
+        #         param.requires_grad = False
+        #         # import pdb; pdb.set_trace()
+
         self.transition = RolloutStorage.Transition()
 
         # PPO parameters
@@ -107,6 +115,12 @@ class PPO:
         # Bootstrapping on time outs
         if 'time_outs' in infos:
             self.transition.rewards += self.gamma * torch.squeeze(self.transition.values * infos['time_outs'].unsqueeze(1).to(self.device), 1)
+        
+        # if 'iters' in infos:
+        #     if infos['iters'] >= 400:
+        #         self.transition.clear()
+        #         self.actor_critic.reset(dones)
+        #         return
 
         # Record the transition
         self.storage.add_transitions(self.transition)
@@ -127,10 +141,10 @@ class PPO:
         for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
             old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
 
-
-                self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                # import pdb; pdb.set_trace()
+                self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch)
                 actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-                value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
+                value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch)
                 mu_batch = self.actor_critic.action_mean
                 sigma_batch = self.actor_critic.action_std
                 entropy_batch = self.actor_critic.entropy
@@ -157,7 +171,7 @@ class PPO:
                 surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(ratio, 1.0 - self.clip_param,
                                                                                 1.0 + self.clip_param)
                 surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
-
+                # surrogate_loss *= torch.zeros_like(surrogate_loss)
                 # Value function loss
                 if self.use_clipped_value_loss:
                     value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(-self.clip_param,

@@ -97,18 +97,29 @@ def coordinate_transform_3D(quat, root, target_point_in_global):
     N is the number of parrallel environments.
     returns the target_point_in_local: Tensor of shape (N, 3) in which coordinates are computed by the quats and roots.
     '''
-    roll, pitch, yaw = get_euler_xyz(quat)
-    Transition_Matrixs = torch.zeros((quat.shape[0], 3, 3))
-    Transition_Matrixs[:, 0, 0] = torch.cos(yaw)*torch.cos(pitch)
-    Transition_Matrixs[:, 0, 1] = torch.cos(yaw)*torch.sin(pitch)*torch.sin(roll)-torch.sin(yaw)*torch.cos(roll)
-    Transition_Matrixs[:, 0, 2] = torch.cos(yaw)*torch.sin(pitch)*torch.cos(roll)+torch.sin(yaw)*torch.sin(roll)
-    Transition_Matrixs[:, 1, 0] = torch.sin(yaw)*torch.cos(pitch)
-    Transition_Matrixs[:, 1, 1] = torch.sin(yaw)*torch.sin(pitch)*torch.sin(roll)+torch.cos(yaw)*torch.cos(roll)
-    Transition_Matrixs[:, 1, 2] = torch.sin(yaw)*torch.sin(pitch)*torch.cos(roll)-torch.cos(yaw)*torch.sin(roll)
-    Transition_Matrixs[:, 2, 0] = -torch.sin(pitch)
-    Transition_Matrixs[:, 2, 1] = torch.cos(pitch)*torch.sin(roll)
-    Transition_Matrixs[:, 2, 2] = torch.cos(pitch)*torch.cos(roll)
-    Transition_Matrixs = Transition_Matrixs.to(quat.device)
-    target_point_in_global = target_point_in_global - root
-    target_point_in_local = torch.matmul(Transition_Matrixs, target_point_in_global.unsqueeze(-1)).squeeze(-1)
-    return target_point_in_local
+    # roll, pitch, yaw = get_euler_xyz(quat)
+    # Transition_Matrixs = torch.zeros((quat.shape[0], 3, 3))
+    # Transition_Matrixs[:, 0, 0] = torch.cos(yaw)*torch.cos(pitch)
+    # Transition_Matrixs[:, 0, 1] = torch.cos(yaw)*torch.sin(pitch)*torch.sin(roll)-torch.sin(yaw)*torch.cos(roll)
+    # Transition_Matrixs[:, 0, 2] = torch.cos(yaw)*torch.sin(pitch)*torch.cos(roll)+torch.sin(yaw)*torch.sin(roll)
+    # Transition_Matrixs[:, 1, 0] = torch.sin(yaw)*torch.cos(pitch)
+    # Transition_Matrixs[:, 1, 1] = torch.sin(yaw)*torch.sin(pitch)*torch.sin(roll)+torch.cos(yaw)*torch.cos(roll)
+    # Transition_Matrixs[:, 1, 2] = torch.sin(yaw)*torch.sin(pitch)*torch.cos(roll)-torch.cos(yaw)*torch.sin(roll)
+    # Transition_Matrixs[:, 2, 0] = -torch.sin(pitch)
+    # Transition_Matrixs[:, 2, 1] = torch.cos(pitch)*torch.sin(roll)
+    # Transition_Matrixs[:, 2, 2] = torch.cos(pitch)*torch.cos(roll)
+    # Transition_Matrixs = Transition_Matrixs.to(quat.device)
+    # target_point_in_global = target_point_in_global - root
+    # target_point_in_local = torch.matmul(Transition_Matrixs, target_point_in_global.unsqueeze(-1)).squeeze(-1)
+    # return target_point_in_local
+    device = root.device
+    relative_points = (target_point_in_global - root).detach().clone().to(device)
+    from scipy.spatial.transform import Rotation as R
+    rotation_matrices = torch.tensor(R.from_quat(quat.detach().cpu().numpy()).as_matrix()).to(device).float()
+    # print(rotation_matrices.shape)
+    # print(relative_points.shape)
+    transformed_points = torch.bmm(rotation_matrices, relative_points.unsqueeze(-1)).squeeze(-1)
+    return transformed_points
+                                                                                      
+
+    
